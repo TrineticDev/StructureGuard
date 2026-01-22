@@ -328,18 +328,26 @@ public class CommandHandler implements CommandExecutor, TabCompleter {
         player.sendMessage("§7Location: §f" + loc.getBlockX() + ", " + loc.getBlockY() + ", " + loc.getBlockZ());
         player.sendMessage("§7Chunk: §f" + chunkX + ", " + chunkZ);
         
+        // Debug: Check if reflection is still initialized
+        plugin.getConfigManager().debug("cmdInfo: checking structures in chunk " + chunkX + "," + chunkZ);
+        
         // Check structures in current chunk via NMS
         List<StructureFinder.StructureResult> structures = 
             plugin.getStructureFinder().getStructuresInChunk(player.getWorld(), chunkX, chunkZ);
         
+        plugin.getConfigManager().debug("cmdInfo: found " + structures.size() + " structures via NMS");
+        
         if (!structures.isEmpty()) {
             player.sendMessage("§7Structures in chunk:");
             for (StructureFinder.StructureResult s : structures) {
+                plugin.getConfigManager().debug("cmdInfo: structure " + s.structureType + " at " + s.x + "," + s.z);
                 boolean isProtected = plugin.getDatabase().isStructureProtected(
                     player.getWorld().getName(), s.structureType, s.x, s.z);
                 String status = isProtected ? " §a(protected)" : " §7(unprotected)";
                 player.sendMessage("  §e" + s.structureType + status);
             }
+        } else {
+            player.sendMessage("§7No structure origins in this chunk.");
         }
         
         // Check nearest in database

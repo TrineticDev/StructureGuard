@@ -185,27 +185,22 @@ public class ConfigManager {
     }
     
     /**
-     * Convert a pattern (minecraft:end_city) to a config key (minecraft.end_city)
-     * Only the namespace colon becomes a dot for YAML compatibility.
+     * Convert a pattern (minecraft:end_city) to a config key (minecraft--end_city)
+     * Uses -- as separator because YAML interprets . as nested path and : is invalid.
      */
     private String patternToConfigKey(String pattern) {
-        int colonIndex = pattern.indexOf(':');
-        if (colonIndex > 0) {
-            return pattern.substring(0, colonIndex) + "." + pattern.substring(colonIndex + 1);
-        }
-        return pattern;
+        return pattern.replace(":", "--");
     }
     
     /**
-     * Convert a config key (minecraft.end_city) back to a pattern (minecraft:end_city)
-     * Only the first dot becomes a colon (namespace separator).
+     * Convert a config key (minecraft--end_city) back to a pattern (minecraft:end_city)
      */
     private String configKeyToPattern(String configKey) {
-        int dotIndex = configKey.indexOf('.');
-        if (dotIndex > 0) {
-            return configKey.substring(0, dotIndex) + ":" + configKey.substring(dotIndex + 1);
+        // New format: -- separator
+        if (configKey.contains("--")) {
+            return configKey.replace("--", ":");
         }
-        // Handle old format with underscores (backwards compatibility)
+        // Old format: _ separator (backwards compatibility, but only first underscore)
         int underscoreIndex = configKey.indexOf('_');
         if (underscoreIndex > 0 && !configKey.contains(":")) {
             return configKey.substring(0, underscoreIndex) + ":" + configKey.substring(underscoreIndex + 1);

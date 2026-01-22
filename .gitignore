@@ -1,0 +1,97 @@
+# ===========================================
+# StructureGuard .gitignore
+# ===========================================
+
+# Gradle build system
+.gradle/
+build/
+!gradle/wrapper/gradle-wrapper.jar
+
+# IDE - IntelliJ IDEA
+.idea/
+*.iml
+*.ipr
+*.iws
+out/
+
+# IDE - Eclipse
+.classpath
+.project
+.settings/
+bin/
+
+# IDE - VS Code
+.vscode/
+*.code-workspace
+
+# OS generated files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Log files
+*.log
+logs/
+
+# Runtime/test data
+run/
+*.lck
+
+# ===========================================
+# DEVELOPMENT FILES - DO NOT UPLOAD
+# ===========================================
+
+# Backup folders
+backup_src*/
+
+# Development notes
+ADMIN_GUIDE.md
+CLEANUP_SUMMARY.md
+CONVERSION_NOTES.md
+EXAMPLES.md
+FABRIC_TESTING.md
+IMPLEMENTATION_SUMMARY.md
+MIGRATION.md
+PIXELMON_GYMS.md
+PIXELMON_SETUP.md
+REBRANDING_SUMMARY.md
+WORLDGUARD.md
+Y-VALUE-PROTECTION.md
+SPIGOT_LISTING.md
+
+# GitHub config (not needed for users)
+.github/
+
+# ===========================================
+# SERVER TEST FILES
+# ===========================================
+
+# Minecraft server folders
+server/
+world/
+world_nether/
+world_the_end/
+plugins/
+cache/
+libraries/
+versions/
+
+# Server files
+*.jar
+!gradle/wrapper/*.jar
+server.properties
+banned-*.json
+ops.json
+whitelist.json
+usercache.json
+eula.txt
+
+# ===========================================
+# SENSITIVE FILES - NEVER UPLOAD
+# ===========================================
+
+*.token
+*.secret
+credentials*
+*.pem
+*.key

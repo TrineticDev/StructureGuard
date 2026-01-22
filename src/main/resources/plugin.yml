@@ -1,0 +1,130 @@
+name: StructureGuard
+version: '${version}'
+main: com.structureguard.StructureGuardPlugin
+api-version: '1.21'
+authors: [StructureProtect]
+description: NMS-based structure discovery with WorldGuard region protection
+website: https://github.com/yourusername/ProtectStructures
+softdepend: [WorldGuard, WorldGuardExtraFlags]
+
+commands:
+  structureguard:
+    description: Main command for structure protection
+    aliases: [sg, structure]
+    usage: |
+      /sg find <structure> - Locate nearest structure
+      /sg scan <radius|border> - Scan area for all structures
+      /sg protect <pattern> <radius> <ymin> <ymax> - Create WorldGuard regions
+      /sg clearregions <pattern> - Remove WorldGuard regions
+      /sg flag <pattern> <flag> <value> - Set region flags
+      /sg addowner <pattern> <player|g:group> - Add region owner
+      /sg removeowner <pattern> <player|g:group> - Remove region owner
+      /sg addmember <pattern> <player|g:group> - Add region member
+      /sg removemember <pattern> <player|g:group> - Remove region member
+      /sg info - Show nearby structure info
+      /sg listall - List all structure types
+      /sg list <pattern> [page] - Paginated structure list
+      /sg protectnear <radius> <ymin> <ymax> - Protect nearest structure
+      /sg unprotectnear - Remove protection from nearest
+      /sg resetdb - Reset structure database
+      /sg reload - Reload configuration
+    permission: structureguard.use
+
+permissions:
+  structureguard.admin:
+    description: All StructureGuard permissions
+    default: op
+    children:
+      structureguard.find: true
+      structureguard.scan: true
+      structureguard.protect: true
+      structureguard.clearregions: true
+      structureguard.flag: true
+      structureguard.addowner: true
+      structureguard.removeowner: true
+      structureguard.addmember: true
+      structureguard.removemember: true
+      structureguard.list: true
+      structureguard.listall: true
+      structureguard.protectnear: true
+      structureguard.unprotectnear: true
+      structureguard.resetdb: true
+      structureguard.reload: true
+      structureguard.teleport: true
+  
+  # Basic read-only access for helpers
+  structureguard.helper:
+    description: Read-only access to view structures
+    default: false
+    children:
+      structureguard.find: true
+      structureguard.list: true
+      structureguard.listall: true
+      structureguard.info: true
+  
+  # Moderator - can find and protect but not manage permissions
+  structureguard.moderator:
+    description: Can find and protect structures
+    default: false
+    children:
+      structureguard.helper: true
+      structureguard.scan: true
+      structureguard.protect: true
+      structureguard.protectnear: true
+      structureguard.flag: true
+      structureguard.teleport: true
+  
+  structureguard.use:
+    description: Basic StructureGuard access
+    default: op
+  structureguard.find:
+    description: Use /sg find
+    default: op
+  structureguard.scan:
+    description: Use /sg scan
+    default: op
+  structureguard.protect:
+    description: Use /sg protect
+    default: op
+  structureguard.clearregions:
+    description: Use /sg clearregions
+    default: op
+  structureguard.flag:
+    description: Use /sg flag
+    default: op
+  structureguard.addowner:
+    description: Use /sg addowner
+    default: op
+  structureguard.removeowner:
+    description: Use /sg removeowner
+    default: op
+  structureguard.addmember:
+    description: Use /sg addmember
+    default: op
+  structureguard.removemember:
+    description: Use /sg removemember
+    default: op
+  structureguard.list:
+    description: Use /sg list
+    default: op
+  structureguard.listall:
+    description: Use /sg listall
+    default: false
+  structureguard.info:
+    description: Use /sg info
+    default: false
+  structureguard.protectnear:
+    description: Use /sg protectnear
+    default: op
+  structureguard.unprotectnear:
+    description: Use /sg unprotectnear
+    default: op
+  structureguard.resetdb:
+    description: Use /sg resetdb
+    default: op
+  structureguard.reload:
+    description: Use /sg reload
+    default: op
+  structureguard.teleport:
+    description: Use clickable teleport links
+    default: op

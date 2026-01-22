@@ -1,0 +1,71 @@
+# =============================================================================
+# StructureGuard Configuration
+# On-Demand Structure Protection System
+# =============================================================================
+# Reload with /sg reload
+
+# Enable debug logging (shows structure detection in console)
+debug: false
+
+# Process existing chunks when they load (not just newly generated ones)
+# Set to true for existing worlds, false for new worlds only
+process-existing-chunks: true
+
+# Default protection settings (used when not specified in /sg protect)
+default-radius: 48
+default-y-min: -64
+default-y-max: 320
+
+# Default WorldGuard flags applied to new regions
+# Customize per-structure with /sg flag <pattern> <flag> <value>
+default-flags:
+  block-break: deny
+  block-place: deny
+  use: allow
+  interact: allow
+  creeper-explosion: deny
+  tnt: deny
+  deny-message: "&cThis structure is protected!"
+
+# =============================================================================
+# PROTECTION RULES
+# =============================================================================
+# Structures here are auto-protected when their chunk loads.
+# Use /sg protect <pattern> in-game to add rules.
+# 
+# Format:
+#   pattern:             # Pattern with : replaced by _ in key
+#     enabled: true      # Whether this rule is active
+#     radius: 48         # Protection radius from structure center
+#     y-min: -64         # Minimum Y level
+#     y-max: 320         # Maximum Y level
+#     priority: 10       # Higher = takes precedence
+#     flags:             # WorldGuard flags for this type
+#       block-break: deny
+#
+# Wildcards:
+#   *                    # All structures
+#   minecraft_*          # All vanilla structures
+#   cobblemon_*_gym      # All Cobblemon gyms
+#
+# Example:
+#   minecraft_village:
+#     enabled: true
+#     radius: 64
+#     y-min: -64
+#     y-max: 320
+#     priority: 10
+#     flags:
+#       block-break: deny
+#       pvp: deny
+
+protected-structures:
+  # Add rules with /sg protect <pattern>
+
+# =============================================================================
+# PERMISSIONS
+# =============================================================================
+# structureguard.admin      - All commands
+# structureguard.find       - /sg find
+# structureguard.listall    - /sg listall  
+# structureguard.teleport   - Clickable teleport links

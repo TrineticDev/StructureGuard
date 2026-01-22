@@ -1,0 +1,40 @@
+# Message Configuration
+# Use & for color codes (e.g., &c for red, &a for green)
+# Available placeholders:
+#   {structure} - Name of the protected structure
+#   {radius} - Protection radius for the structure
+#   {x} - X coordinate
+#   {z} - Z coordinate
+#   {world} - World name
+
+# Message shown when a player tries to break a block in a protected structure
+protection-message: "&cThis structure is protected!"
+
+# Alternative with structure name
+# protection-message: "&cYou cannot break blocks in {structure}!"
+
+# Message shown when a player tries to place a block in a protected structure
+# If not set, uses protection-message
+# place-message: "&cYou cannot place blocks in protected structures!"
+
+# Message shown when config is reloaded
+reload-success: "&aStructure Protection config reloaded! Cache cleared."
+
+# Message shown when a non-admin tries to use admin commands
+no-permission: "&cYou don't have permission to use this command!"
+
+# Individual structure protection messages
+structure-added: "&aProtecting {structure} at ({x}, {z}) with {radius} chunk radius"
+structure-removed: "&aRemoved protection from {structure} at ({x}, {z})"
+structure-not-found: "&cNo structure found within {radius} chunks"
+structure-already-protected: "&eThis structure is already individually protected"
+structure-already-unprotected: "&eThis structure is already individually unprotected"
+invalid-radius: "&cInvalid radius! Must be between 1 and {max}"
+
+# Structure info command messages
+nearest-structure: "&6Nearest Structure: &f{structure}\n&7Location: &f{x}, {z} &7({world})\n&7Distance: &f{distance} blocks"
+no-structures-found: "&cNo structures found nearby. Explore more to build the structure database!"
+structure-type-not-found: "&cNo locations found for structure type: &f{structure}\n&7This structure hasn't been discovered yet."
+
+# Debug message format (shown in console when debug-logging is true)
+# debug-format: "[Structure Protection] {message}"

@@ -55,8 +55,10 @@ public class ConfigManager {
             for (String patternKey : structures.getKeys(false)) {
                 ConfigurationSection ruleSection = structures.getConfigurationSection(patternKey);
                 if (ruleSection != null) {
-                    // Convert underscore back to colon for pattern
-                    String pattern = patternKey.replace("_", ":");
+                    // Convert config key back to pattern
+                    // Only the FIRST underscore is the namespace separator (becomes :)
+                    // Other underscores are part of the structure name
+                    String pattern = configKeyToPattern(patternKey);
                     boolean enabled = ruleSection.getBoolean("enabled", true);
                     int radius = ruleSection.getInt("radius", defaultRadius);
                     int yMin = ruleSection.getInt("y-min", defaultYMin);
@@ -145,7 +147,9 @@ public class ConfigManager {
         
         // Save to config
         FileConfiguration config = plugin.getConfig();
-        String path = "protected-structures." + rule.pattern.replace(":", "_");
+        // Only the FIRST colon is the namespace separator (becomes _)
+        // Other underscores/colons stay as-is
+        String path = "protected-structures." + patternToConfigKey(rule.pattern);
         config.set(path + ".enabled", rule.enabled);
         config.set(path + ".radius", rule.radius);
         config.set(path + ".y-min", rule.yMin);
@@ -166,7 +170,7 @@ public class ConfigManager {
         if (protectionRules.remove(pattern) != null) {
             // Remove from config
             FileConfiguration config = plugin.getConfig();
-            config.set("protected-structures." + pattern.replace(":", "_"), null);
+            config.set("protected-structures." + patternToConfigKey(pattern), null);
             plugin.saveConfig();
             return true;
         }
@@ -178,6 +182,35 @@ public class ConfigManager {
      */
     public Map<String, ProtectionRule> getProtectionRules() {
         return new HashMap<>(protectionRules);
+    }
+    
+    /**
+     * Convert a pattern (minecraft:end_city) to a config key (minecraft.end_city)
+     * Only the namespace colon becomes a dot for YAML compatibility.
+     */
+    private String patternToConfigKey(String pattern) {
+        int colonIndex = pattern.indexOf(':');
+        if (colonIndex > 0) {
+            return pattern.substring(0, colonIndex) + "." + pattern.substring(colonIndex + 1);
+        }
+        return pattern;
+    }
+    
+    /**
+     * Convert a config key (minecraft.end_city) back to a pattern (minecraft:end_city)
+     * Only the first dot becomes a colon (namespace separator).
+     */
+    private String configKeyToPattern(String configKey) {
+        int dotIndex = configKey.indexOf('.');
+        if (dotIndex > 0) {
+            return configKey.substring(0, dotIndex) + ":" + configKey.substring(dotIndex + 1);
+        }
+        // Handle old format with underscores (backwards compatibility)
+        int underscoreIndex = configKey.indexOf('_');
+        if (underscoreIndex > 0 && !configKey.contains(":")) {
+            return configKey.substring(0, underscoreIndex) + ":" + configKey.substring(underscoreIndex + 1);
+        }
+        return configKey;
     }
     
     /**

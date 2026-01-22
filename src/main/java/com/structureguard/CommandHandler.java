@@ -427,9 +427,55 @@ public class CommandHandler implements CommandExecutor, TabCompleter {
             sender.sendMessage("§a✓ Updated protection rule: §e" + pattern);
         }
         sender.sendMessage("§7Radius: " + radius + " | Y: " + yMin + " to " + yMax);
-        sender.sendMessage("§7Structures will be auto-protected when chunks load.");
+        
+        // Retroactively protect structures already in database
+        final String finalPattern = pattern;
+        final ConfigManager.ProtectionRule finalRule = rule;
+        int created = protectExistingStructures(finalPattern, finalRule);
+        
+        if (created > 0) {
+            sender.sendMessage("§a✓ Created §e" + created + "§a regions for existing structures.");
+        } else {
+            sender.sendMessage("§7Structures will be auto-protected when chunks load.");
+        }
         
         return true;
+    }
+    
+    /**
+     * Create WorldGuard regions for structures already in the database.
+     * Called when a protection rule is added/enabled.
+     */
+    private int protectExistingStructures(String pattern, ConfigManager.ProtectionRule rule) {
+        int created = 0;
+        
+        // Get all structures matching this pattern from the database
+        List<StructureDatabase.StructureInfo> structures = plugin.getDatabase().getUnprotectedStructures(pattern);
+        
+        for (StructureDatabase.StructureInfo info : structures) {
+            // Check if this structure matches the pattern
+            if (matchesPattern(info.type, pattern)) {
+                String regionId = plugin.getRegionManager().createRegionWithFlags(
+                    info, rule.radius, rule.yMin, rule.yMax, rule.flags);
+                if (regionId != null) {
+                    created++;
+                }
+            }
+        }
+        
+        return created;
+    }
+    
+    /**
+     * Check if a structure type matches a pattern.
+     */
+    private boolean matchesPattern(String structureType, String pattern) {
+        if (pattern.equals("*")) return true;
+        if (pattern.contains("*")) {
+            String regex = pattern.replace(".", "\\.").replace("*", ".*");
+            return structureType.matches(regex);
+        }
+        return pattern.equals(structureType);
     }
     
     /**

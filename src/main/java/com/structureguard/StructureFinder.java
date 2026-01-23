@@ -1615,12 +1615,18 @@ public class StructureFinder {
     private List<StructureResult> getStructuresInChunkAsync(int chunkX, int chunkZ) {
         List<StructureResult> results = new ArrayList<>();
         
+        plugin.getConfigManager().debug("getStructuresInChunkAsync: chunk " + chunkX + "," + chunkZ + 
+            ", useFabricPath=" + useFabricPath + 
+            ", chunkMethod=" + (chunkGetStructureStartsMethod != null ? chunkGetStructureStartsMethod.getName() : "null"));
+        
         try {
             if (useFabricPath) {
                 // Chunk-based path: use Chunk.getStructureStarts/getAllStarts()
+                plugin.getConfigManager().debug("Using Fabric chunk path");
                 results = getStructuresViaChunkFabric(chunkX, chunkZ);
             } else {
                 // Mojang path: use StructureManager.getAllStructuresAt()
+                plugin.getConfigManager().debug("Using Mojang path");
                 results = getStructuresViaMojang(chunkX, chunkZ);
                 
                 // If Mojang path returns nothing but we have the chunk method, try chunk path as fallback
@@ -1717,23 +1723,38 @@ public class StructureFinder {
         try {
             // Get chunk from ServerWorld
             Object chunk = getChunkMethod.invoke(cachedServerLevel, chunkX, chunkZ);
-            if (chunk == null) return results;
+            if (chunk == null) {
+                plugin.getConfigManager().debug("getStructuresViaChunkFabric: chunk is null for " + chunkX + "," + chunkZ);
+                return results;
+            }
             
             // Get structure starts map
             Object structureStartsObj = chunkGetStructureStartsMethod.invoke(chunk);
-            if (structureStartsObj == null || !(structureStartsObj instanceof Map)) {
+            if (structureStartsObj == null) {
+                plugin.getConfigManager().debug("getStructuresViaChunkFabric: structureStarts is null");
+                return results;
+            }
+            if (!(structureStartsObj instanceof Map)) {
+                plugin.getConfigManager().debug("getStructuresViaChunkFabric: structureStarts is not a Map, it's: " + 
+                    structureStartsObj.getClass().getName());
                 return results;
             }
             
             Map<?, ?> structureStarts = (Map<?, ?>) structureStartsObj;
+            plugin.getConfigManager().debug("getStructuresViaChunkFabric: chunk " + chunkX + "," + chunkZ + 
+                " has " + structureStarts.size() + " structure entries");
             
             for (Map.Entry<?, ?> entry : structureStarts.entrySet()) {
                 Object structure = entry.getKey();
                 Object structureStart = entry.getValue();
                 
+                plugin.getConfigManager().debug("  Entry: key=" + structure.getClass().getSimpleName() + 
+                    ", value=" + (structureStart != null ? structureStart.getClass().getSimpleName() : "null"));
+                
                 if (structureStart == null) continue;
                 
                 String structureName = getStructureNameCached(structure);
+                plugin.getConfigManager().debug("  Structure name: " + structureName);
                 
                 // Skip ignored structures
                 if (structureName == null || plugin.getConfigManager().isStructureIgnored(structureName)) {
@@ -1780,10 +1801,15 @@ public class StructureFinder {
                     int originX = originChunkX * 16 + 8;
                     int originZ = originChunkZ * 16 + 8;
                     results.add(new StructureResult(structureName, originX, originZ, originChunkX, originChunkZ));
+                    plugin.getConfigManager().debug("  Added structure result: " + structureName + " at chunk " + originChunkX + "," + originChunkZ);
+                } else {
+                    plugin.getConfigManager().debug("  Skipping: origin chunk " + originChunkX + "," + originChunkZ + 
+                        " != query chunk " + chunkX + "," + chunkZ);
                 }
             }
         } catch (Exception e) {
-            // Silent fail
+            plugin.getConfigManager().debug("getStructuresViaChunkFabric error: " + e.getMessage());
+            e.printStackTrace();
         }
         
         return results;

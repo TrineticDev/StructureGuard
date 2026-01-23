@@ -150,56 +150,90 @@ public class CommandHandler implements CommandExecutor, TabCompleter {
         Player player = (Player) sender;
         String structureType = args[1].toLowerCase();
         
-        // For /sg find, we need an exact structure ID for NMS locate
-        // If no namespace, check database first with wildcard, then try minecraft:
-        String searchPattern = structureType;
+        // Create pattern for matching - if no namespace, use wildcard
+        String pattern = structureType;
         if (!structureType.contains(":")) {
-            // Check if there's a match in database with any namespace
-            searchPattern = "*:*" + structureType + "*";
+            pattern = "*:*" + structureType + "*";
         }
         
-        player.sendMessage("§7Searching for " + structureType + "...");
+        player.sendMessage("§7Searching for " + structureType + " in nearby chunks...");
         
-        // First check database for known structures
-        Location found = findNearestFromDatabase(player, structureType);
+        int chunkX = player.getLocation().getBlockX() >> 4;
+        int chunkZ = player.getLocation().getBlockZ() >> 4;
         
-        // If not in database, use NMS locate
-        if (found == null) {
-            found = plugin.getStructureFinder().findNearest(
-                player.getWorld(), 
-                player.getLocation(), 
-                structureType, 
-                10000
-            );
-            
-            // If found, add to database for future lookups
-            if (found != null) {
-                plugin.getDatabase().addStructure(
-                    player.getWorld().getName(),
-                    structureType,
-                    found.getBlockX(),
-                    found.getBlockZ()
-                );
+        // Search radius of 4 chunks (64 blocks in each direction)
+        int searchRadius = 4;
+        
+        StructureFinder.StructureResult nearest = null;
+        double nearestDist = Double.MAX_VALUE;
+        
+        // Scan nearby chunks for matching structures
+        for (int dx = -searchRadius; dx <= searchRadius; dx++) {
+            for (int dz = -searchRadius; dz <= searchRadius; dz++) {
+                List<StructureFinder.StructureResult> results = 
+                    plugin.getStructureFinder().getStructuresInChunk(player.getWorld(), chunkX + dx, chunkZ + dz);
+                
+                for (StructureFinder.StructureResult s : results) {
+                    if (matchesPattern(s.structureType, pattern)) {
+                        double dist = Math.sqrt(
+                            Math.pow(s.x - player.getLocation().getBlockX(), 2) +
+                            Math.pow(s.z - player.getLocation().getBlockZ(), 2)
+                        );
+                        if (dist < nearestDist) {
+                            nearestDist = dist;
+                            nearest = s;
+                        }
+                    }
+                }
             }
         }
         
-        if (found != null) {
-            double dist = player.getLocation().distance(found);
+        // Also check database for known structures (may have been found earlier)
+        Location dbFound = findNearestFromDatabase(player, pattern);
+        if (dbFound != null) {
+            double dbDist = player.getLocation().distance(dbFound);
+            if (nearest == null || dbDist < nearestDist) {
+                // Use database result
+                player.sendMessage("§a✓ Found (from database)");
+                player.sendMessage("§7Location: §f" + dbFound.getBlockX() + ", " + dbFound.getBlockZ());
+                player.sendMessage("§7Distance: §f" + String.format("%.0f", dbDist) + " blocks");
+                
+                if (player.hasPermission("structureguard.teleport")) {
+                    TextComponent tp = new TextComponent("§e[Click to teleport]");
+                    tp.setClickEvent(new ClickEvent(ClickEvent.Action.RUN_COMMAND, 
+                        "/minecraft:tp @s " + dbFound.getBlockX() + " " + (dbFound.getBlockY() + 5) + " " + dbFound.getBlockZ()));
+                    tp.setHoverEvent(new HoverEvent(HoverEvent.Action.SHOW_TEXT, 
+                        new ComponentBuilder("Click to teleport").create()));
+                    player.spigot().sendMessage(tp);
+                }
+                return true;
+            }
+        }
+        
+        if (nearest != null) {
+            player.sendMessage("§a✓ Found " + nearest.structureType);
+            player.sendMessage("§7Location: §f" + nearest.x + ", " + nearest.z);
+            player.sendMessage("§7Chunk: §f" + nearest.chunkX + ", " + nearest.chunkZ);
+            player.sendMessage("§7Distance: §f" + String.format("%.0f", nearestDist) + " blocks");
             
-            player.sendMessage("§a✓ Found " + structureType);
-            player.sendMessage("§7Location: §f" + found.getBlockX() + ", " + found.getBlockZ());
-            player.sendMessage("§7Distance: §f" + String.format("%.0f", dist) + " blocks");
+            // Add to database for future lookups
+            plugin.getDatabase().addStructure(
+                player.getWorld().getName(),
+                nearest.structureType,
+                nearest.x,
+                nearest.z
+            );
             
             if (player.hasPermission("structureguard.teleport")) {
                 TextComponent tp = new TextComponent("§e[Click to teleport]");
                 tp.setClickEvent(new ClickEvent(ClickEvent.Action.RUN_COMMAND, 
-                    "/minecraft:tp @s " + found.getBlockX() + " " + (found.getBlockY() + 5) + " " + found.getBlockZ()));
+                    "/minecraft:tp @s " + nearest.x + " 100 " + nearest.z));
                 tp.setHoverEvent(new HoverEvent(HoverEvent.Action.SHOW_TEXT, 
                     new ComponentBuilder("Click to teleport").create()));
                 player.spigot().sendMessage(tp);
             }
         } else {
-            player.sendMessage("§cNo " + structureType + " found within 10000 blocks.");
+            player.sendMessage("§cNo " + structureType + " found within " + (searchRadius * 16) + " blocks.");
             player.sendMessage("§7Tip: Use /sg listall to see available structure types.");
         }
         

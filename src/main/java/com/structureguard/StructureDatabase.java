@@ -421,11 +421,22 @@ public class StructureDatabase {
     public List<int[]> getStructuresOfType(String world, String structureType) {
         List<int[]> results = new ArrayList<>();
         try {
-            PreparedStatement stmt = connection.prepareStatement(
-                "SELECT x, z FROM structures WHERE world = ? AND structure_type = ?"
-            );
-            stmt.setString(1, world);
-            stmt.setString(2, structureType);
+            PreparedStatement stmt;
+            // Support pattern matching with wildcards
+            if (structureType.contains("*")) {
+                String sqlPattern = structureType.replace("*", "%");
+                stmt = connection.prepareStatement(
+                    "SELECT x, z FROM structures WHERE world = ? AND structure_type LIKE ?"
+                );
+                stmt.setString(1, world);
+                stmt.setString(2, sqlPattern);
+            } else {
+                stmt = connection.prepareStatement(
+                    "SELECT x, z FROM structures WHERE world = ? AND structure_type = ?"
+                );
+                stmt.setString(1, world);
+                stmt.setString(2, structureType);
+            }
             ResultSet rs = stmt.executeQuery();
             
             while (rs.next()) {

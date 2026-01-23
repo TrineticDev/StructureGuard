@@ -150,9 +150,12 @@ public class CommandHandler implements CommandExecutor, TabCompleter {
         Player player = (Player) sender;
         String structureType = args[1].toLowerCase();
         
-        // Add namespace if missing
+        // For /sg find, we need an exact structure ID for NMS locate
+        // If no namespace, check database first with wildcard, then try minecraft:
+        String searchPattern = structureType;
         if (!structureType.contains(":")) {
-            structureType = "minecraft:" + structureType;
+            // Check if there's a match in database with any namespace
+            searchPattern = "*:*" + structureType + "*";
         }
         
         player.sendMessage("§7Searching for " + structureType + "...");
@@ -396,17 +399,19 @@ public class CommandHandler implements CommandExecutor, TabCompleter {
         if (args.length < 2) {
             sender.sendMessage("§cUsage: /sg protect <pattern> [radius] [ymin] [ymax]");
             sender.sendMessage("§7Examples:");
-            sender.sendMessage("§7  /sg protect village §8(partial name, adds minecraft:)");
-            sender.sendMessage("§7  /sg protect minecraft:* §8(all vanilla structures)");
+            sender.sendMessage("§7  /sg protect village §8(matches *:*village* in any namespace)");
+            sender.sendMessage("§7  /sg protect minecraft:village §8(exact match)");
             sender.sendMessage("§7  /sg protect cobblemon:*_gym 64");
             return true;
         }
         
         String pattern = args[1].toLowerCase();
         
-        // Add namespace if missing and not a wildcard
+        // If no namespace provided, make it a wildcard pattern that matches any namespace
+        // e.g., "brock" becomes "*:*brock*" to match "cobbleverse:brock"
         if (!pattern.contains(":") && !pattern.equals("*")) {
-            pattern = "minecraft:" + pattern;
+            pattern = "*:*" + pattern + "*";
+            sender.sendMessage("§7Using wildcard pattern: §e" + pattern);
         }
         
         int radius = plugin.getConfigManager().getDefaultRadius();
@@ -527,9 +532,9 @@ public class CommandHandler implements CommandExecutor, TabCompleter {
             }
         }
         
-        // Add namespace if missing and not a wildcard
+        // Use wildcard pattern if no namespace provided
         if (!pattern.contains(":") && !pattern.equals("*")) {
-            pattern = "minecraft:" + pattern;
+            pattern = "*:*" + pattern + "*";
         }
         
         boolean removed = plugin.getConfigManager().removeProtectionRule(pattern);

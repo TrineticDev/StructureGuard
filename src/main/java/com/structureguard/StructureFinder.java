@@ -990,6 +990,7 @@ public class StructureFinder {
     
     /**
      * Find a method by exact names only (no pattern matching).
+     * Returns 0-arg methods only.
      */
     private Method findMethodByNames(Class<?> clazz, String... names) {
         for (String name : names) {
@@ -999,11 +1000,41 @@ public class StructureFinder {
                 // Try next
             }
         }
-        // Search all methods
+        // Search all methods - but only return 0-arg methods
         for (Method m : clazz.getMethods()) {
-            for (String name : names) {
-                if (m.getName().equals(name)) {
-                    return m;
+            if (m.getParameterCount() == 0) {
+                for (String name : names) {
+                    if (m.getName().equals(name)) {
+                        return m;
+                    }
+                }
+            }
+        }
+        return null;
+    }
+    
+    /**
+     * Find a method by exact names that takes one parameter of specified type.
+     */
+    private Method findMethodByNamesWithParam(Class<?> clazz, Class<?> paramType, String... names) {
+        for (String name : names) {
+            try {
+                return clazz.getMethod(name, paramType);
+            } catch (NoSuchMethodException e) {
+                // Try next
+            }
+        }
+        // Search all methods with matching param type
+        for (Method m : clazz.getMethods()) {
+            if (m.getParameterCount() == 1) {
+                Class<?> actualParam = m.getParameterTypes()[0];
+                if (actualParam.isAssignableFrom(paramType) || paramType.isAssignableFrom(actualParam) ||
+                    actualParam == Object.class) {
+                    for (String name : names) {
+                        if (m.getName().equals(name)) {
+                            return m;
+                        }
+                    }
                 }
             }
         }
@@ -1986,8 +2017,22 @@ public class StructureFinder {
             Object blockPos = blockPosConstructor.newInstance(center.getBlockX(), center.getBlockY(), center.getBlockZ());
             
             // Get Holder and create HolderSet
-            Method wrapAsHolderMethod = findMethodByNames(cachedStructureRegistry.getClass(),
-                "wrapAsHolder", "method_40259", "m_203538_", "a");
+            // wrapAsHolder takes an Object (the structure) and returns a Holder
+            Method wrapAsHolderMethod = findMethodByNamesWithParam(cachedStructureRegistry.getClass(),
+                Object.class, "wrapAsHolder", "method_40259", "m_203538_");
+            
+            // If not found by name, search by signature
+            if (wrapAsHolderMethod == null) {
+                for (Method m : cachedStructureRegistry.getClass().getMethods()) {
+                    if (m.getParameterCount() == 1 && 
+                        m.getReturnType().getSimpleName().contains("Holder")) {
+                        wrapAsHolderMethod = m;
+                        plugin.getConfigManager().debug("Found wrapAsHolder via signature: " + m.getName());
+                        break;
+                    }
+                }
+            }
+            
             if (wrapAsHolderMethod == null) {
                 plugin.getConfigManager().debug("Could not find wrapAsHolder method");
                 return null;

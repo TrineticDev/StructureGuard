@@ -1,9 +1,9 @@
 name: StructureGuard
 version: '${version}'
 main: com.structureguard.StructureGuardPlugin
-api-version: '1.21'
+api-version: '1.17'
 authors: [StructureProtect]
-description: NMS-based structure discovery with WorldGuard region protection
+description: NMS-based structure discovery with WorldGuard region protection (1.17+)
 website: https://github.com/yourusername/ProtectStructures
 softdepend: [WorldGuard, WorldGuardExtraFlags]
 

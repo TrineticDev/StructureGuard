@@ -86,38 +86,87 @@ public class StructureFinder {
             plugin.getConfigManager().debug("ServerLevel class: " + serverClassName);
             
             // Cache BlockPos class and constructor - try multiple class names
+            // Paper uses Mojang mappings: BlockPos
+            // Spigot uses Spigot mappings: BlockPosition
+            // Fabric uses intermediary: class_2338
             blockPosClass = findClass(
-                "net.minecraft.core.BlockPos",
-                "net.minecraft.class_2338",
-                "net.minecraft.util.math.BlockPos"  // Yarn name
+                "net.minecraft.core.BlockPos",           // Paper/Mojang
+                "net.minecraft.core.BlockPosition",      // Spigot
+                "net.minecraft.class_2338",              // Fabric intermediary
+                "net.minecraft.util.math.BlockPos"       // Yarn
             );
             if (blockPosClass == null) {
                 throw new ClassNotFoundException("Could not find BlockPos class");
             }
+            plugin.getConfigManager().debug("Found BlockPos class: " + blockPosClass.getName());
             blockPosConstructor = blockPosClass.getConstructor(int.class, int.class, int.class);
             
             // Try Mojang path FIRST (Paper/NeoForge/Spigot - the original working path)
             boolean mojangPathWorks = false;
-            plugin.getConfigManager().debug("Trying Mojang path first (Paper/NeoForge)...");
+            plugin.getConfigManager().debug("Trying Mojang path first (Paper/NeoForge/Spigot)...");
             
             try {
+                // Spigot uses different method names than Paper - try both
                 structureManagerMethod = findMethodByNames(cachedServerLevel.getClass(), 
-                    "structureManager", "method_14178", "m_7004_", "a");
+                    "structureManager",      // Paper (Mojang mapped)
+                    "getStructureManager",   // Alternative
+                    "method_14178",          // Fabric intermediary
+                    "m_7004_",               // Forge SRG
+                    "K", "L", "M", "N",      // Common Spigot obfuscated names
+                    "a", "b", "c", "d");     // More Spigot names
+                
+                // If not found by name, search by return type
                 if (structureManagerMethod == null) {
-                    structureManagerMethod = findMethodByReturnType(cachedServerLevel.getClass(), "StructureManager", "class_5962");
+                    structureManagerMethod = findMethodByReturnType(cachedServerLevel.getClass(), 
+                        "StructureManager", "class_5962", "StructureTemplateManager");
+                }
+                
+                // Last resort: find any no-arg method returning something structure-related
+                if (structureManagerMethod == null) {
+                    for (Method m : cachedServerLevel.getClass().getMethods()) {
+                        if (m.getParameterCount() == 0) {
+                            String retName = m.getReturnType().getSimpleName();
+                            if (retName.contains("Structure") && retName.contains("Manager")) {
+                                structureManagerMethod = m;
+                                plugin.getConfigManager().debug("Found structureManager via signature search: " + m.getName());
+                                break;
+                            }
+                        }
+                    }
                 }
                 
                 if (structureManagerMethod != null) {
                     cachedStructureManager = structureManagerMethod.invoke(cachedServerLevel);
                     plugin.getConfigManager().debug("Got StructureManager: " + cachedStructureManager.getClass().getName());
                     
-                    // Try to find getAllStructuresAt
+                    // Try to find getAllStructuresAt - check multiple name variants
                     getAllStructuresAtMethod = findMethod(cachedStructureManager.getClass(),
-                        new String[]{"getAllStructuresAt", "method_38853", "m_220437_", "a"},
+                        new String[]{"getAllStructuresAt", "method_38853", "m_220437_", 
+                                     "a", "b", "c", "d", "e", "f", "g"},  // Spigot obfuscated names
                         blockPosClass);
+                    
+                    // If not found, search by signature: takes BlockPos, returns Map
                     if (getAllStructuresAtMethod == null) {
                         getAllStructuresAtMethod = findMethodByReturnTypeAndParam(cachedStructureManager.getClass(), 
                             "Map", blockPosClass);
+                    }
+                    
+                    // Last resort: find any method taking our blockPosClass and returning a Map
+                    if (getAllStructuresAtMethod == null) {
+                        for (Method m : cachedStructureManager.getClass().getMethods()) {
+                            if (m.getParameterCount() == 1 && 
+                                Map.class.isAssignableFrom(m.getReturnType())) {
+                                Class<?> paramType = m.getParameterTypes()[0];
+                                // Check if param is BlockPos-like (has int coords)
+                                if (paramType.equals(blockPosClass) || 
+                                    paramType.getSimpleName().contains("BlockPos") ||
+                                    paramType.getSimpleName().contains("BlockPosition")) {
+                                    getAllStructuresAtMethod = m;
+                                    plugin.getConfigManager().debug("Found getAllStructuresAt via signature: " + m.getName());
+                                    break;
+                                }
+                            }
+                        }
                     }
                     
                     if (getAllStructuresAtMethod != null) {
@@ -141,6 +190,56 @@ public class StructureFinder {
                 }
             } catch (Exception e) {
                 plugin.getConfigManager().debug("Mojang path failed: " + e.getMessage());
+            }
+            
+            // If Mojang path didn't work, try Spigot's StructureFeatureManager path
+            if (!mojangPathWorks) {
+                plugin.getConfigManager().debug("Trying Spigot StructureFeatureManager path...");
+                try {
+                    // On Spigot, look for methods that return something with "Structure" in the name
+                    for (Method m : cachedServerLevel.getClass().getMethods()) {
+                        if (m.getParameterCount() == 0) {
+                            String retName = m.getReturnType().getName();
+                            // Check for any structure-related manager
+                            if ((retName.contains("Structure") || retName.contains("structure")) &&
+                                !retName.contains("Template")) {  // Skip StructureTemplateManager
+                                try {
+                                    Object potentialManager = m.invoke(cachedServerLevel);
+                                    if (potentialManager != null) {
+                                        // Look for a method that takes BlockPos and returns Map
+                                        for (Method sm : potentialManager.getClass().getMethods()) {
+                                            if (sm.getParameterCount() == 1 && 
+                                                Map.class.isAssignableFrom(sm.getReturnType())) {
+                                                Class<?> paramType = sm.getParameterTypes()[0];
+                                                if (paramType.equals(blockPosClass) ||
+                                                    paramType.getSimpleName().contains("Pos")) {
+                                                    // Test it
+                                                    Object testPos = blockPosConstructor.newInstance(0, 64, 0);
+                                                    Object testResult = sm.invoke(potentialManager, testPos);
+                                                    if (testResult instanceof Map) {
+                                                        structureManagerMethod = m;
+                                                        cachedStructureManager = potentialManager;
+                                                        getAllStructuresAtMethod = sm;
+                                                        mojangPathWorks = true;
+                                                        useFabricPath = false;
+                                                        plugin.getConfigManager().debug("Found Spigot path: " + 
+                                                            m.getName() + "() -> " + sm.getName() + "()");
+                                                        break;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        if (mojangPathWorks) break;
+                                    }
+                                } catch (Exception e2) {
+                                    // Continue searching
+                                }
+                            }
+                        }
+                    }
+                } catch (Exception e) {
+                    plugin.getConfigManager().debug("Spigot StructureFeatureManager path failed: " + e.getMessage());
+                }
             }
             
             // If Mojang path didn't work, try Chunk-based path (Fabric fallback)
@@ -196,20 +295,31 @@ public class StructureFinder {
                             
                             // Find getAllStarts or getStructureStarts
                             chunkGetStructureStartsMethod = findMethodByNames(testChunk.getClass(),
-                                "getAllStarts", "getStructureStarts", "method_12016", "getAllReferences", "a");
+                                "getAllStarts", "getStructureStarts", "method_12016", "getAllReferences", 
+                                "h", "g", "f", "e", "d", "c", "b", "a");  // Try obfuscated names
                             
                             if (chunkGetStructureStartsMethod == null) {
                                 // Search for any 0-param method returning a Map
                                 for (Method m : testChunk.getClass().getMethods()) {
                                     if (m.getParameterCount() == 0 && 
-                                        m.getReturnType().getName().contains("Map")) {
-                                        String mName = m.getName();
-                                        if (mName.toLowerCase().contains("start") || 
-                                            mName.toLowerCase().contains("structure") ||
-                                            mName.equals("getAllStarts")) {
-                                            chunkGetStructureStartsMethod = m;
-                                            plugin.getConfigManager().debug("Found structure starts method: " + mName);
-                                            break;
+                                        Map.class.isAssignableFrom(m.getReturnType())) {
+                                        chunkGetStructureStartsMethod = m;
+                                        plugin.getConfigManager().debug("Found potential structure method: " + 
+                                            m.getName() + " -> " + m.getReturnType().getSimpleName());
+                                        break;
+                                    }
+                                }
+                            }
+                            
+                            // If still not found, list all methods to diagnose
+                            if (chunkGetStructureStartsMethod == null) {
+                                plugin.getConfigManager().debug("Could not find structure starts method on Chunk. Available 0-param methods:");
+                                for (Method m : testChunk.getClass().getMethods()) {
+                                    if (m.getParameterCount() == 0 && !m.getReturnType().equals(void.class)) {
+                                        String retName = m.getReturnType().getSimpleName();
+                                        if (retName.contains("Map") || retName.contains("Structure") || 
+                                            retName.contains("Start") || m.getName().length() <= 2) {
+                                            plugin.getConfigManager().debug("  " + m.getName() + "() -> " + retName);
                                         }
                                     }
                                 }
@@ -225,21 +335,26 @@ public class StructureFinder {
                                     Map<?, ?> startsMap = (Map<?, ?>) structureStarts;
                                     plugin.getConfigManager().debug("Structure starts map has " + startsMap.size() + " entries");
                                     
+                                    // Even if empty, the path works - we just can't cache StructureStart methods yet
+                                    chunkPathWorks = true;
+                                    useFabricPath = true;
+                                    
                                     if (!startsMap.isEmpty()) {
                                         Object sampleStart = startsMap.values().iterator().next();
                                         if (sampleStart != null) {
                                             structureStartGetStructureMethod = findMethodByNames(sampleStart.getClass(),
-                                                "getStructure", "method_16656", "getFeature", "e");
+                                                "getStructure", "method_16656", "getFeature", "e", "f", "g");
                                             structureStartGetBoundingBoxMethod = findMethodByNames(sampleStart.getClass(),
-                                                "getBoundingBox", "method_14969", "f");
+                                                "getBoundingBox", "method_14969", "f", "g", "h");
                                             plugin.getConfigManager().debug("Found StructureStart methods");
                                         }
                                     }
                                     
-                                    chunkPathWorks = true;
-                                    useFabricPath = true;
-                                    plugin.getConfigManager().debug("Using Chunk-based path (Fabric fallback): Chunk." + 
+                                    plugin.getConfigManager().debug("Using Chunk-based path: Chunk." + 
                                         chunkGetStructureStartsMethod.getName() + "()");
+                                } else {
+                                    plugin.getConfigManager().debug("Chunk structure method returned: " + 
+                                        (structureStarts == null ? "null" : structureStarts.getClass().getName()));
                                 }
                             }
                         }
@@ -251,6 +366,8 @@ public class StructureFinder {
             
             // Make sure at least one path works
             if (!mojangPathWorks && !chunkPathWorks) {
+                plugin.getLogger().warning("Neither Mojang nor Chunk-based path could be initialized.");
+                plugin.getLogger().warning("This server version may not be supported. Enable debug mode for details.");
                 throw new NoSuchMethodException("Neither Mojang nor Chunk-based path could be initialized");
             }
             
@@ -326,29 +443,140 @@ public class StructureFinder {
             }
             
             if (registryAccess == null) {
-                // Dump all 0-param methods to find the right one
-                plugin.getLogger().warning("Could not find registryAccess. Dumping ALL 0-param methods on ServerLevel:");
-                for (Method m : cachedServerLevel.getClass().getMethods()) {
-                    if (m.getParameterCount() == 0 && !m.getReturnType().equals(void.class)) {
-                        plugin.getLogger().info("  " + m.getName() + "() -> " + m.getReturnType().getName());
-                    }
-                }
+                plugin.getLogger().warning("Could not find registryAccess method on this server version.");
                 throw new NoSuchMethodException("Could not find registryAccess method");
             }
             
             plugin.getConfigManager().debug("RegistryAccess class: " + registryAccess.getClass().getName());
             
-            // Get Registries class and STRUCTURE field
-            // Fabric: RegistryKeys -> class_7923, field_41236
-            // Spigot: net.minecraft.core.registries.Registries
-            Class<?> registriesClass = findClass(
-                "net.minecraft.core.registries.Registries",
-                "net.minecraft.registry.RegistryKeys",
-                "net.minecraft.class_7923",
-                "net.minecraft.class_7157"
-            );
-            if (registriesClass == null) {
-                throw new ClassNotFoundException("Could not find Registries class");
+            // For 1.17-1.19.2 LEGACY path: Get structure registry directly from RegistryAccess
+            // In these versions, we can iterate registries to find the structure one
+            boolean triedLegacyRegistryAccess = false;
+            
+            // RegistryAccess methods logged only if needed for debugging
+            
+            // Try ALL 0-param methods that return something iterable or registry-related
+            for (Method m : registryAccess.getClass().getMethods()) {
+                if (m.getParameterCount() == 0 && cachedStructureRegistry == null) {
+                    String returnTypeName = m.getReturnType().getName();
+                    
+                    // Skip obvious non-registry methods
+                    if (m.getReturnType().equals(void.class) || 
+                        m.getReturnType().equals(String.class) ||
+                        m.getReturnType().equals(int.class) ||
+                        m.getReturnType().equals(boolean.class)) continue;
+                    
+                    try {
+                        Object result = m.invoke(registryAccess);
+                        if (result != null) {
+                            // Check if it's directly a registry containing structures
+                            String resultStr = result.toString().toLowerCase();
+                            if (resultStr.contains("structure") && 
+                                result.getClass().getName().contains("Registry") &&
+                                !resultStr.contains("structure_piece") &&
+                                !resultStr.contains("structure_set")) {
+                                cachedStructureRegistry = result;
+                                plugin.getConfigManager().debug("Found structure registry directly via: " + m.getName());
+                                break;
+                            }
+                            
+                            // Try to iterate if it's a collection
+                            Iterable<?> registries = null;
+                            if (result instanceof Iterable) {
+                                registries = (Iterable<?>) result;
+                            } else if (result.getClass().getName().contains("Stream")) {
+                                try {
+                                    Method toListMethod = result.getClass().getMethod("toList");
+                                    registries = (Iterable<?>) toListMethod.invoke(result);
+                                } catch (Exception e) {
+                                    // Not a stream with toList
+                                }
+                            }
+                            
+                            if (registries != null) {
+                                for (Object entry : registries) {
+                                    String entryStr = entry.toString().toLowerCase();
+                                    if (entryStr.contains("structure_feature") || 
+                                        (entryStr.contains("structure") && 
+                                         !entryStr.contains("structure_piece") &&
+                                         !entryStr.contains("structure_set") && 
+                                         !entryStr.contains("structure_processor"))) {
+                                        
+                                        // Extract registry from entry
+                                        if (entry.getClass().getName().contains("Registry")) {
+                                            cachedStructureRegistry = entry;
+                                        } else {
+                                            // Try methods that return Registry
+                                            for (Method em : entry.getClass().getMethods()) {
+                                                if (em.getParameterCount() == 0 && 
+                                                    em.getReturnType().getName().contains("Registry")) {
+                                                    try {
+                                                        cachedStructureRegistry = em.invoke(entry);
+                                                        break;
+                                                    } catch (Exception e2) {}
+                                                }
+                                            }
+                                            // Try second() for Pair types
+                                            if (cachedStructureRegistry == null) {
+                                                for (Method em : entry.getClass().getMethods()) {
+                                                    if (em.getName().equals("getSecond") || em.getName().equals("second") ||
+                                                        em.getName().equals("getValue") || em.getName().equals("b")) {
+                                                        try {
+                                                            Object val = em.invoke(entry);
+                                                            if (val != null && val.getClass().getName().contains("Registry")) {
+                                                                cachedStructureRegistry = val;
+                                                                break;
+                                                            }
+                                                        } catch (Exception e2) {}
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        if (cachedStructureRegistry != null) {
+                                            plugin.getConfigManager().debug("Found structure registry via iteration: " + 
+                                                m.getName() + " -> " + entryStr.substring(0, Math.min(60, entryStr.length())));
+                                            triedLegacyRegistryAccess = true;
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    } catch (Exception e) {
+                        // Skip methods that throw
+                    }
+                }
+            }
+            
+            // Get Registries class and STRUCTURE field (for 1.19.3+)
+            // Skip if we already found the registry via legacy RegistryAccess iteration
+            if (cachedStructureRegistry == null) {
+                // 1.19.3+: net.minecraft.core.registries.Registries
+                // 1.17-1.19.2: net.minecraft.core.Registry (static fields)
+                // Fabric: RegistryKeys -> class_7923, field_41236
+                Class<?> registriesClass = findClass(
+                    "net.minecraft.core.registries.Registries",  // 1.19.3+
+                    "net.minecraft.registry.RegistryKeys",       // Fabric 1.19.3+
+                    "net.minecraft.class_7923",                  // Fabric intermediary
+                    "net.minecraft.class_7157"                   // Older Fabric
+                );
+                
+                // Fallback for 1.17-1.19.2: use Registry class directly
+                boolean usingLegacyRegistry = false;
+                if (registriesClass == null) {
+                    registriesClass = findClass(
+                        "net.minecraft.core.Registry",           // 1.17-1.19.2 Spigot/Paper
+                        "net.minecraft.core.IRegistry",          // Spigot obfuscated
+                        "net.minecraft.class_2378"               // Fabric intermediary
+                    );
+                    if (registriesClass != null) {
+                        usingLegacyRegistry = true;
+                        plugin.getConfigManager().debug("Using legacy Registry class (1.17-1.19.2): " + registriesClass.getName());
+                    }
+                }
+                
+                if (registriesClass == null) {
+                    throw new ClassNotFoundException("Could not find Registries class");
             }
             plugin.getConfigManager().debug("Registries class: " + registriesClass.getName());
             
@@ -356,13 +584,19 @@ public class StructureFinder {
             structureRegistryKey = null;
             
             // Try known field names first - include more Fabric intermediary names
+            // 1.19.3+: STRUCTURE
+            // 1.18.2-1.19.2: CONFIGURED_STRUCTURE_FEATURE
+            // 1.17-1.18.1: STRUCTURE_FEATURE (ResourceKey) or the registry directly
             String[] structureFieldNames = {
-                "STRUCTURE",           // Mojang/Paper
-                "field_41236",         // Fabric intermediary
-                "field_40229",         // Older Fabric
-                "f_256952_",           // Forge SRG
-                "WORLDGEN_STRUCTURE",  // Alternative name
-                "k"                    // Obfuscated
+                "STRUCTURE",                    // 1.19.3+ Mojang/Paper
+                "CONFIGURED_STRUCTURE_FEATURE", // 1.18.2-1.19.2
+                "STRUCTURE_FEATURE",            // 1.17-1.18.1 (ResourceKey)
+                "ae", "af", "ag", "ah",         // Spigot obfuscated (varies by version)
+                "field_41236",                  // Fabric intermediary
+                "field_40229",                  // Older Fabric
+                "f_256952_",                    // Forge SRG
+                "WORLDGEN_STRUCTURE",           // Alternative name
+                "k", "l", "m", "n"              // More obfuscated
             };
             for (String fieldName : structureFieldNames) {
                 try {
@@ -444,35 +678,116 @@ public class StructureFinder {
             }
             
             if (structureRegistryKey == null) {
-                // Dump all fields to help debug
-                plugin.getLogger().warning("Could not find STRUCTURE registry key. Available fields:");
-                for (java.lang.reflect.Field f : registriesClass.getFields()) {
-                    try {
-                        Object value = f.get(null);
-                        plugin.getLogger().info("  " + f.getName() + " = " + value);
-                    } catch (Exception e) {
-                        plugin.getLogger().info("  " + f.getName() + " = (error reading)");
+                // For legacy versions (1.17-1.19.2), try to get the registry directly from Registry class
+                if (usingLegacyRegistry) {
+                    plugin.getConfigManager().debug("Trying to get structure registry directly from Registry class...");
+                    
+                    // In 1.17, the registry fields are named like "e", "f", etc. (obfuscated)
+                    // We need to find one that contains structure-related data
+                    // Look for ANY field that IS a registry and might contain structures
+                    
+                    // First, list all registry-type fields to understand the format
+                    List<String> registryFields = new ArrayList<>();
+                    for (java.lang.reflect.Field f : registriesClass.getFields()) {
+                        try {
+                            Object value = f.get(null);
+                            if (value != null) {
+                                String typeName = value.getClass().getName();
+                                if (typeName.contains("Registry") || typeName.contains("IRegistry")) {
+                                    String valueStr = value.toString();
+                                    registryFields.add(f.getName() + " -> " + valueStr);
+                                    
+                                    // Check if this registry is for structures
+                                    if (valueStr.toLowerCase().contains("structure")) {
+                                        cachedStructureRegistry = value;
+                                        plugin.getConfigManager().debug("Found legacy structure registry: " + 
+                                            f.getName() + " = " + valueStr);
+                                        break;
+                                    }
+                                }
+                            }
+                        } catch (Exception e) {
+                            // Skip
+                        }
+                    }
+                    
+                    if (cachedStructureRegistry == null && !registryFields.isEmpty()) {
+                        plugin.getConfigManager().debug("Registry fields found but none matched 'structure':");
+                        for (String rf : registryFields) {
+                            plugin.getConfigManager().debug("  " + rf);
+                        }
                     }
                 }
-                throw new NoSuchFieldException("Could not find STRUCTURE field");
+                
+                if (structureRegistryKey == null && cachedStructureRegistry == null) {
+                    // For chunk-based path (1.17-1.18), we can work without the registry
+                    // We just won't be able to list ALL structure types, only detected ones
+                    if (useFabricPath) {
+                        plugin.getLogger().warning("Could not find structure registry. /sg listall may be limited on this version.");
+                        plugin.getLogger().info("Structure detection will still work via chunk-based path.");
+                        // Don't throw - continue without registry
+                    } else {
+                        plugin.getLogger().warning("Could not find STRUCTURE registry key on this server version.");
+                        plugin.getLogger().warning("Enable debug mode for detailed diagnostics.");
+                        throw new NoSuchFieldException("Could not find STRUCTURE field");
+                    }
+                }
             }
+            } // End of outer: if (cachedStructureRegistry == null) - Registries class lookup
             
-            // Get ResourceKey class
-            Class<?> resourceKeyClass = findClass(
-                "net.minecraft.resources.ResourceKey",
-                "net.minecraft.class_5321"
-            );
-            if (resourceKeyClass == null) {
-                throw new ClassNotFoundException("Could not find ResourceKey class");
+            // Skip all registry-related setup if we're using chunk-based fallback without registry
+            if (cachedStructureRegistry == null && useFabricPath) {
+                plugin.getConfigManager().debug("Skipping registry setup - using chunk-based detection only");
+                // Continue to finalize initialization without registry
+            } else if (cachedStructureRegistry == null) {
+                // Get ResourceKey class (needed for modern registry access)
+                Class<?> resourceKeyClass = findClass(
+                    "net.minecraft.resources.ResourceKey",
+                    "net.minecraft.class_5321"
+                );
+                if (resourceKeyClass == null) {
+                    throw new ClassNotFoundException("Could not find ResourceKey class");
+                }
+            
+                // Get registry from registryAccess
+                // Mojang 1.20-: registryOrThrow(ResourceKey) -> Registry
+                // Mojang 1.21+: lookupOrThrow(ResourceKey) -> Registry
+                // Fabric: getOptional(RegistryKey) -> Optional<Registry> (method_33310)
+                // Spigot: f(ResourceKey) -> IRegistry (obfuscated)
+                registryOrThrowMethod = findMethod(registryAccess.getClass(),
+                    new String[]{"registryOrThrow", "lookupOrThrow", "method_30530", "m_175515_",
+                                 "f", "e", "d", "c", "b", "a", "g", "h"},  // Spigot obfuscated names
+                    resourceKeyClass);
+            
+            // If not found by name, search by signature: takes ResourceKey, returns Registry-like
+            if (registryOrThrowMethod == null) {
+                for (Method m : registryAccess.getClass().getMethods()) {
+                    if (m.getParameterCount() == 1) {
+                        Class<?> paramType = m.getParameterTypes()[0];
+                        String returnTypeName = m.getReturnType().getSimpleName();
+                        // Check if param is ResourceKey-like and return is Registry-like
+                        if ((paramType.equals(resourceKeyClass) || 
+                             paramType.getSimpleName().contains("ResourceKey") ||
+                             paramType.getSimpleName().contains("RegistryKey")) &&
+                            (returnTypeName.contains("Registry") || 
+                             returnTypeName.equals("IRegistry") ||
+                             returnTypeName.contains("class_"))) {
+                            // Test it with our structure registry key
+                            try {
+                                Object testResult = m.invoke(registryAccess, structureRegistryKey);
+                                if (testResult != null) {
+                                    registryOrThrowMethod = m;
+                                    plugin.getConfigManager().debug("Found registry method via signature: " + 
+                                        m.getName() + " -> " + returnTypeName);
+                                    break;
+                                }
+                            } catch (Exception e) {
+                                // This method throws, continue searching
+                            }
+                        }
+                    }
+                }
             }
-            
-            // Get registry from registryAccess
-            // Mojang 1.20-: registryOrThrow(ResourceKey) -> Registry
-            // Mojang 1.21+: lookupOrThrow(ResourceKey) -> Registry
-            // Fabric: getOptional(RegistryKey) -> Optional<Registry> (method_33310)
-            registryOrThrowMethod = findMethod(registryAccess.getClass(),
-                new String[]{"registryOrThrow", "lookupOrThrow", "method_30530", "m_175515_"},
-                resourceKeyClass);
             
             if (registryOrThrowMethod != null) {
                 cachedStructureRegistry = registryOrThrowMethod.invoke(registryAccess, structureRegistryKey);
@@ -497,48 +812,53 @@ public class StructureFinder {
                 }
                 
                 if (cachedStructureRegistry == null) {
-                    // Dump ALL methods on registryAccess to find the right one
-                    plugin.getLogger().warning("Could not find registry method. RegistryAccess class: " + 
-                        registryAccess.getClass().getName());
-                    plugin.getLogger().warning("Available methods that return something useful:");
-                    for (Method m : registryAccess.getClass().getMethods()) {
-                        // Show all 1-param methods that might be useful
-                        if (m.getParameterCount() == 1) {
-                            String paramType = m.getParameterTypes()[0].getName();
-                            String returnType = m.getReturnType().getName();
-                            // Only show methods that might be registry-related
-                            if (returnType.contains("Registry") || returnType.contains("Optional") ||
-                                returnType.contains("class_") || paramType.contains("Key") ||
-                                paramType.contains("class_")) {
-                                plugin.getLogger().info("  " + m.getName() + "(" + 
-                                    m.getParameterTypes()[0].getSimpleName() + ") -> " + 
-                                    m.getReturnType().getSimpleName());
-                            }
-                        }
+                    // For chunk-based path (1.17-1.18), we can work without the registry
+                    // We just won't be able to list ALL structure types, only detected ones
+                    if (useFabricPath) {
+                        plugin.getLogger().warning("Could not find structure registry. /sg listall may not work on this version.");
+                        plugin.getLogger().info("Structure detection will still work - structures will be named from chunk data.");
+                    } else {
+                        plugin.getLogger().warning("Could not find registry access method on this server version.");
+                        throw new NoSuchMethodException("Could not find registry access method");
                     }
-                    // Also show 0-param methods
-                    plugin.getLogger().warning("Available 0-param methods:");
-                    for (Method m : registryAccess.getClass().getMethods()) {
-                        if (m.getParameterCount() == 0) {
-                            String returnType = m.getReturnType().getName();
-                            if (returnType.contains("Registry") || returnType.contains("class_") ||
-                                m.getName().contains("registry") || m.getName().contains("method_")) {
-                                plugin.getLogger().info("  " + m.getName() + "() -> " + 
-                                    m.getReturnType().getSimpleName());
-                            }
-                        }
-                    }
-                    throw new NoSuchMethodException("Could not find registry access method");
                 }
             }
+            } // End of: else if (cachedStructureRegistry == null) - registry lookup block
             
-            // Get getKey method from registry
-            getKeyMethod = findMethod(cachedStructureRegistry.getClass(),
-                new String[]{"getKey", "method_10221", "m_7981_"},
-                Object.class);
-            if (getKeyMethod == null) {
-                throw new NoSuchMethodException("Could not find getKey method");
-            }
+            // Get getKey method from registry (only if we have a registry)
+            if (cachedStructureRegistry != null) {
+                // Mojang: getKey(Object) -> ResourceLocation
+                // Spigot: usually obfuscated single letters
+                getKeyMethod = findMethod(cachedStructureRegistry.getClass(),
+                    new String[]{"getKey", "method_10221", "m_7981_", 
+                                 "b", "c", "d", "e", "f", "g", "a"},  // Spigot obfuscated
+                    Object.class);
+            
+                // If not found, search by signature: takes Object, returns ResourceLocation-like
+                if (getKeyMethod == null) {
+                    for (Method m : cachedStructureRegistry.getClass().getMethods()) {
+                        if (m.getParameterCount() == 1 && m.getParameterTypes()[0] == Object.class) {
+                            String returnTypeName = m.getReturnType().getSimpleName();
+                            // ResourceLocation on Spigot is MinecraftKey
+                            if (returnTypeName.contains("ResourceLocation") || 
+                                returnTypeName.contains("MinecraftKey") ||
+                                returnTypeName.contains("Identifier") ||
+                                returnTypeName.contains("class_")) {
+                                getKeyMethod = m;
+                                plugin.getConfigManager().debug("Found getKey via signature: " + m.getName() + 
+                                    " -> " + returnTypeName);
+                                break;
+                            }
+                        }
+                    }
+                }
+            
+                if (getKeyMethod == null) {
+                    plugin.getLogger().warning("Could not find getKey method on structure registry.");
+                    throw new NoSuchMethodException("Could not find getKey method");
+                }
+                plugin.getConfigManager().debug("Found getKey method: " + getKeyMethod.getName());
+            } // End of: if (cachedStructureRegistry != null) - getKey setup
             
             // Pre-cache iterator methods for LongOpenHashSet
             try {
@@ -788,6 +1108,14 @@ public class StructureFinder {
     }
     
     /**
+     * Check if we're using chunk-based detection (legacy servers like 1.17-1.18).
+     * This is useful to show appropriate messages to users.
+     */
+    public boolean isUsingChunkBasedDetection() {
+        return useFabricPath && cachedStructureRegistry == null;
+    }
+    
+    /**
      * Get all registered structure types from the server.
      * Works with vanilla and modded structures (Pixelmon, Terralith, etc.)
      */
@@ -867,14 +1195,41 @@ public class StructureFinder {
                     getNamespace = resourceLocation.getClass().getMethod("method_12836"); // Fabric getNamespace
                     getPath = resourceLocation.getClass().getMethod("method_12832"); // Fabric getPath
                 } catch (NoSuchMethodException e2) {
-                    // Try other common method names
+                    // Try Spigot's MinecraftKey method names
+                    // On Spigot, getNamespace() and getPath() should exist on MinecraftKey
+                    // But they might be obfuscated - we need to find the right ones
+                    
+                    // First, look for explicit namespace/path-like names
                     for (Method m : resourceLocation.getClass().getMethods()) {
                         if (m.getParameterCount() == 0 && m.getReturnType() == String.class) {
                             String methodName = m.getName().toLowerCase();
-                            if (methodName.contains("namespace") || methodName.equals("a")) {
-                                if (getNamespace == null) getNamespace = m;
-                            } else if (methodName.contains("path") || methodName.equals("b")) {
-                                if (getPath == null) getPath = m;
+                            if (methodName.contains("namespace")) {
+                                getNamespace = m;
+                            } else if (methodName.contains("path") || methodName.contains("key")) {
+                                getPath = m;
+                            }
+                        }
+                    }
+                    
+                    // If still not found, try to identify by invoking and checking values
+                    if (getNamespace == null || getPath == null) {
+                        for (Method m : resourceLocation.getClass().getMethods()) {
+                            if (m.getParameterCount() == 0 && m.getReturnType() == String.class) {
+                                try {
+                                    String value = (String) m.invoke(resourceLocation);
+                                    // Namespace is usually "minecraft" or a short word
+                                    // Path contains underscores like "ancient_city"
+                                    if (value != null) {
+                                        if (value.equals("minecraft") || 
+                                            (value.length() < 20 && !value.contains("_") && !value.contains("/"))) {
+                                            if (getNamespace == null) getNamespace = m;
+                                        } else if (value.contains("_") || value.contains("/")) {
+                                            if (getPath == null) getPath = m;
+                                        }
+                                    }
+                                } catch (Exception ex) {
+                                    // Skip
+                                }
                             }
                         }
                     }

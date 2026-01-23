@@ -247,9 +247,23 @@ public class CommandHandler implements CommandExecutor, TabCompleter {
         List<String> types = plugin.getStructureFinder().getAllStructureTypes();
         
         if (types.isEmpty()) {
-            sender.sendMessage("§cNo structure types found in registry.");
-            sender.sendMessage("§7This may indicate a reflection issue. Check console for errors.");
-            sender.sendMessage("§7Try: /sg debug to enable debug logging, then /sg reload");
+            // Check if we're using chunk-based detection (legacy servers like 1.17)
+            if (plugin.getStructureFinder().isUsingChunkBasedDetection()) {
+                sender.sendMessage("§6This server version uses chunk-based structure detection.");
+                sender.sendMessage("§7The §e/sg listall§7 command is not available on legacy servers (1.17-1.18)");
+                sender.sendMessage("§7because the structure registry is not accessible.");
+                sender.sendMessage("");
+                sender.sendMessage("§aStructure detection still works!§7 Use:");
+                sender.sendMessage("§e  /sg info§7 - Check structures at your location");
+                sender.sendMessage("§e  /sg protect§7 - Protect a structure you're standing in");
+                sender.sendMessage("");
+                sender.sendMessage("§7Common structure types: §fminecraft:village§7, §fminecraft:fortress§7,");
+                sender.sendMessage("§fminecraft:monument§7, §fminecraft:mansion§7, §fminecraft:stronghold");
+            } else {
+                sender.sendMessage("§cNo structure types found in registry.");
+                sender.sendMessage("§7This may indicate a reflection issue. Check console for errors.");
+                sender.sendMessage("§7Try: /sg debug to enable debug logging, then /sg reload");
+            }
             return true;
         }
         

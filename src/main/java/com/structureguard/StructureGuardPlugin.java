@@ -26,10 +26,18 @@ public class StructureGuardPlugin extends JavaPlugin {
         configManager = new ConfigManager(this);
         database = new StructureDatabase(this);
         structureFinder = new StructureFinder(this);
-        regionManager = new RegionManager(this);
+        
+        // Initialize RegionManager - may fail if WorldGuard is missing/broken
+        try {
+            regionManager = new RegionManager(this);
+        } catch (NoClassDefFoundError | Exception e) {
+            getLogger().warning("Could not initialize WorldGuard integration: " + e.getMessage());
+            getLogger().warning("Region protection features will be disabled.");
+            regionManager = null;
+        }
         
         // Register on-demand protection listener
-        if (regionManager.isWorldGuardAvailable()) {
+        if (regionManager != null && regionManager.isWorldGuardAvailable()) {
             chunkLoadListener = new ChunkLoadListener(this);
             getServer().getPluginManager().registerEvents(chunkLoadListener, this);
             getLogger().info("On-demand structure protection enabled!");
@@ -44,7 +52,7 @@ public class StructureGuardPlugin extends JavaPlugin {
         
         getLogger().info("StructureGuard enabled!");
         
-        if (!regionManager.isWorldGuardAvailable()) {
+        if (regionManager == null || !regionManager.isWorldGuardAvailable()) {
             getLogger().warning("WorldGuard not found! Region protection features disabled.");
         }
     }
@@ -61,7 +69,9 @@ public class StructureGuardPlugin extends JavaPlugin {
         reloadConfig();
         configManager = new ConfigManager(this);
         // Sync any manual region edits from config
-        regionManager.syncFromConfig();
+        if (regionManager != null) {
+            regionManager.syncFromConfig();
+        }
     }
     
     public StructureDatabase getDatabase() {

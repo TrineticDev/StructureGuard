@@ -1762,17 +1762,20 @@ public class StructureFinder {
      * Get structure name using cached registry (fast path)
      */
     private String getStructureNameCached(Object structure) {
-        try {
-            Object resourceLocation = getKeyMethod.invoke(cachedStructureRegistry, structure);
-            if (resourceLocation != null) {
-                // Use proper extraction to handle both Mojang and Fabric ResourceLocations
-                String name = extractResourceLocationName(resourceLocation);
-                if (name != null && name.contains(":") && name.length() > 5) {
-                    return name;
+        // Try registry lookup first (works on modern versions with full registry access)
+        if (getKeyMethod != null && cachedStructureRegistry != null) {
+            try {
+                Object resourceLocation = getKeyMethod.invoke(cachedStructureRegistry, structure);
+                if (resourceLocation != null) {
+                    // Use proper extraction to handle both Mojang and Fabric ResourceLocations
+                    String name = extractResourceLocationName(resourceLocation);
+                    if (name != null && name.contains(":") && name.length() > 5) {
+                        return name;
+                    }
                 }
+            } catch (Exception e) {
+                // Try alternative approaches
             }
-        } catch (Exception e) {
-            // Try alternative approaches
         }
         
         // Try to get the ResourceKey/Holder if available (Fabric uses Holders extensively)
@@ -1786,6 +1789,46 @@ public class StructureFinder {
                     String typeStr = extractResourceLocationName(type);
                     if (typeStr != null && typeStr.contains(":") && typeStr.length() > 5) {
                         return typeStr;
+                    }
+                }
+            }
+        } catch (Exception e) {
+            // Continue to fallback
+        }
+        
+        // Fabric/modern versions may use Holder<Structure> - try to unwrap
+        try {
+            // Check if this is a Holder and get its key or value
+            Method keyMethod = findMethodByNames(structure.getClass(), 
+                "key", "method_40327", "getKey", "registryKey");
+            if (keyMethod != null) {
+                Object key = keyMethod.invoke(structure);
+                if (key != null) {
+                    // Key is a ResourceKey, try to get its location
+                    Method locationMethod = findMethodByNames(key.getClass(), 
+                        "location", "method_29177", "getValue", "getLocation");
+                    if (locationMethod != null) {
+                        Object loc = locationMethod.invoke(key);
+                        if (loc != null) {
+                            String name = extractResourceLocationName(loc);
+                            if (name != null && name.contains(":") && name.length() > 5) {
+                                return name;
+                            }
+                        }
+                    }
+                }
+            }
+            
+            // Also try value() for Holder types
+            Method valueMethod = findMethodByNames(structure.getClass(), 
+                "value", "method_40329", "get");
+            if (valueMethod != null) {
+                Object innerStructure = valueMethod.invoke(structure);
+                if (innerStructure != null && innerStructure != structure) {
+                    // Recursively try to get name from the inner structure
+                    String name = getStructureNameCached(innerStructure);
+                    if (name != null && name.contains(":") && name.length() > 5) {
+                        return name;
                     }
                 }
             }
@@ -1821,6 +1864,8 @@ public class StructureFinder {
         
         // Fallback: extract from class name
         String className = structure.getClass().getSimpleName();
+        plugin.getConfigManager().debug("getStructureNameCached fallback - class: " + className + 
+            ", toString: " + structure.toString().substring(0, Math.min(100, structure.toString().length())));
         if (className.endsWith("Structure")) {
             return "minecraft:" + className.substring(0, className.length() - 9).toLowerCase();
         }
@@ -2060,8 +2105,36 @@ public class StructureFinder {
     
     private Object parseResourceLocation(String name, Class<?> rlClass) {
         try {
-            // Try multiple method names for parse
-            Method parseMethod = findMethod(rlClass, "parse", "method_60654", "m_135827_");
+            // Try static parse method that takes a String
+            // Must explicitly look for methods with 1 String param
+            Method parseMethod = null;
+            String[] parseMethodNames = {"parse", "method_60654", "m_135827_", "tryParse", "of"};
+            
+            for (String methodName : parseMethodNames) {
+                try {
+                    parseMethod = rlClass.getMethod(methodName, String.class);
+                    if (java.lang.reflect.Modifier.isStatic(parseMethod.getModifiers())) {
+                        break;
+                    }
+                    parseMethod = null; // Not static, keep looking
+                } catch (NoSuchMethodException e) {
+                    // Try next name
+                }
+            }
+            
+            // If not found by exact name, search by signature
+            if (parseMethod == null) {
+                for (Method m : rlClass.getMethods()) {
+                    if (java.lang.reflect.Modifier.isStatic(m.getModifiers()) &&
+                        m.getParameterCount() == 1 &&
+                        m.getParameterTypes()[0] == String.class &&
+                        m.getReturnType().isAssignableFrom(rlClass)) {
+                        parseMethod = m;
+                        break;
+                    }
+                }
+            }
+            
             if (parseMethod != null) {
                 return parseMethod.invoke(null, name);
             }
@@ -2075,6 +2148,7 @@ public class StructureFinder {
                 return rlClass.getConstructor(String.class).newInstance(name);
             }
         } catch (Exception e) {
+            plugin.getConfigManager().debug("parseResourceLocation failed: " + e.getMessage());
             return null;
         }
     }

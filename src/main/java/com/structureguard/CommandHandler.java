@@ -346,22 +346,45 @@ public class CommandHandler implements CommandExecutor, TabCompleter {
         player.sendMessage("§7Chunk: §f" + chunkX + ", " + chunkZ);
         
         // Debug: Check if reflection is still initialized
-        plugin.getConfigManager().debug("cmdInfo: checking structures in chunk " + chunkX + "," + chunkZ);
+        plugin.getConfigManager().debug("cmdInfo: checking structures near chunk " + chunkX + "," + chunkZ);
         
-        // Check structures in current chunk via NMS
-        List<StructureFinder.StructureResult> structures = 
-            plugin.getStructureFinder().getStructuresInChunk(player.getWorld(), chunkX, chunkZ);
+        // Check structures in current AND neighboring chunks (3x3 area)
+        List<StructureFinder.StructureResult> allStructures = new ArrayList<>();
+        for (int dx = -1; dx <= 1; dx++) {
+            for (int dz = -1; dz <= 1; dz++) {
+                List<StructureFinder.StructureResult> structures = 
+                    plugin.getStructureFinder().getStructuresInChunk(player.getWorld(), chunkX + dx, chunkZ + dz);
+                allStructures.addAll(structures);
+            }
+        }
         
-        plugin.getConfigManager().debug("cmdInfo: found " + structures.size() + " structures via NMS");
+        plugin.getConfigManager().debug("cmdInfo: found " + allStructures.size() + " structures in 3x3 chunk area");
         
-        if (!structures.isEmpty()) {
+        if (!allStructures.isEmpty()) {
             player.sendMessage("§7Structures in chunk:");
-            for (StructureFinder.StructureResult s : structures) {
+            for (StructureFinder.StructureResult s : allStructures) {
                 plugin.getConfigManager().debug("cmdInfo: structure " + s.structureType + " at " + s.x + "," + s.z);
                 boolean isProtected = plugin.getDatabase().isStructureProtected(
                     player.getWorld().getName(), s.structureType, s.x, s.z);
                 String status = isProtected ? " §a(protected)" : " §7(unprotected)";
-                player.sendMessage("  §e" + s.structureType + status);
+                
+                // Check if there's a matching rule
+                ConfigManager.ProtectionRule rule = findMatchingRule(s.structureType);
+                if (rule != null && !isProtected) {
+                    status = " §7(unprotected)";
+                    // Offer to protect it now
+                    player.sendMessage("  §e" + s.structureType + status);
+                    
+                    // Create clickable protection message
+                    TextComponent protectLink = new TextComponent("    §a[Click to Protect]");
+                    protectLink.setClickEvent(new ClickEvent(ClickEvent.Action.RUN_COMMAND, 
+                        "/sg protect " + s.structureType));
+                    protectLink.setHoverEvent(new HoverEvent(HoverEvent.Action.SHOW_TEXT, 
+                        new ComponentBuilder("§aProtect this structure").create()));
+                    player.spigot().sendMessage(protectLink);
+                } else {
+                    player.sendMessage("  §e" + s.structureType + status);
+                }
             }
         } else {
             player.sendMessage("§7No structure origins in this chunk.");
@@ -460,8 +483,46 @@ public class CommandHandler implements CommandExecutor, TabCompleter {
         final ConfigManager.ProtectionRule finalRule = rule;
         int created = protectExistingStructures(finalPattern, finalRule);
         
+        // If player is standing near a matching structure, protect it immediately
+        if (sender instanceof Player && plugin.getRegionManager() != null 
+                && plugin.getRegionManager().isWorldGuardAvailable()) {
+            Player player = (Player) sender;
+            int chunkX = player.getLocation().getBlockX() >> 4;
+            int chunkZ = player.getLocation().getBlockZ() >> 4;
+            
+            // Scan nearby chunks for matching structures
+            for (int dx = -2; dx <= 2; dx++) {
+                for (int dz = -2; dz <= 2; dz++) {
+                    List<StructureFinder.StructureResult> nearby = 
+                        plugin.getStructureFinder().getStructuresInChunk(player.getWorld(), chunkX + dx, chunkZ + dz);
+                    
+                    for (StructureFinder.StructureResult s : nearby) {
+                        if (matchesPattern(s.structureType, finalPattern)) {
+                            // Add to database (if not exists)
+                            plugin.getDatabase().addStructure(
+                                player.getWorld().getName(), s.structureType, s.x, s.z);
+                            
+                            // Create StructureInfo and region
+                            StructureDatabase.StructureInfo info = new StructureDatabase.StructureInfo(
+                                player.getWorld().getName(), s.structureType, s.x, s.z, false, null);
+                            
+                            String regionId = plugin.getRegionManager().createRegionWithFlags(
+                                info, finalRule.radius, finalRule.yMin, finalRule.yMax, finalRule.flags);
+                            
+                            if (regionId != null) {
+                                plugin.getDatabase().setRegionId(
+                                    player.getWorld().getName(), s.structureType, s.x, s.z, regionId);
+                                created++;
+                                sender.sendMessage("§a✓ Protected nearby: §e" + s.structureType + " §7at " + s.x + ", " + s.z);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
         if (created > 0) {
-            sender.sendMessage("§a✓ Created §e" + created + "§a regions for existing structures.");
+            sender.sendMessage("§a✓ Created §e" + created + "§a region(s) total.");
         } else {
             sender.sendMessage("§7Structures will be auto-protected when chunks load.");
         }
@@ -503,6 +564,19 @@ public class CommandHandler implements CommandExecutor, TabCompleter {
             return structureType.matches(regex);
         }
         return pattern.equals(structureType);
+    }
+    
+    /**
+     * Find a protection rule that matches a structure type.
+     */
+    private ConfigManager.ProtectionRule findMatchingRule(String structureType) {
+        for (Map.Entry<String, ConfigManager.ProtectionRule> entry : 
+                plugin.getConfigManager().getProtectionRules().entrySet()) {
+            if (matchesPattern(structureType, entry.getKey())) {
+                return entry.getValue();
+            }
+        }
+        return null;
     }
     
     /**

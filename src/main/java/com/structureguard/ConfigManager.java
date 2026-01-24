@@ -4,7 +4,10 @@ import org.bukkit.configuration.ConfigurationSection;
 import org.bukkit.configuration.file.FileConfiguration;
 
 import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Manages plugin configuration including protected structure rules.
@@ -18,6 +21,7 @@ public class ConfigManager {
     private int defaultYMax;
     private boolean processExistingChunks;
     private Map<String, String> defaultFlags;
+    private Set<String> disabledWorlds;
     
     // Protection rules - pattern -> rule
     private final Map<String, ProtectionRule> protectionRules = new HashMap<>();
@@ -35,6 +39,16 @@ public class ConfigManager {
         defaultYMin = config.getInt("default-y-min", -64);
         defaultYMax = config.getInt("default-y-max", 320);
         processExistingChunks = config.getBoolean("process-existing-chunks", true);
+        
+        // Load disabled worlds
+        disabledWorlds = new HashSet<>();
+        List<String> disabledList = config.getStringList("disabled-worlds");
+        for (String world : disabledList) {
+            disabledWorlds.add(world.toLowerCase());
+        }
+        if (!disabledWorlds.isEmpty()) {
+            plugin.getLogger().info("Protection disabled in worlds: " + String.join(", ", disabledWorlds));
+        }
         
         // Load default flags
         defaultFlags = new HashMap<>();
@@ -256,6 +270,20 @@ public class ConfigManager {
     
     public boolean shouldProcessExistingChunks() {
         return processExistingChunks;
+    }
+    
+    /**
+     * Check if a world is disabled for structure protection.
+     */
+    public boolean isWorldDisabled(String worldName) {
+        return disabledWorlds.contains(worldName.toLowerCase());
+    }
+    
+    /**
+     * Get the set of disabled worlds.
+     */
+    public Set<String> getDisabledWorlds() {
+        return new HashSet<>(disabledWorlds);
     }
     
     public Map<String, String> getDefaultFlags() {

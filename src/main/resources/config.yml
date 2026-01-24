@@ -11,6 +11,12 @@ debug: false
 # Set to true for existing worlds, false for new worlds only
 process-existing-chunks: true
 
+# Worlds where structure protection is completely disabled
+# Useful for resource worlds that reset periodically
+disabled-worlds:
+  # - resource_world
+  # - mining_world
+
 # Default protection settings (used when not specified in /sg protect)
 default-radius: 48
 default-y-min: -64

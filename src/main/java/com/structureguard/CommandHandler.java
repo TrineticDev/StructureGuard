@@ -71,6 +71,8 @@ public class CommandHandler implements CommandExecutor, TabCompleter {
             // Region management
             case "clearregions":
                 return cmdClearRegions(sender, args);
+            case "resetworld":
+                return cmdResetWorld(sender, args);
             case "addowner":
                 return cmdAddOwner(sender, args);
             case "removeowner":
@@ -116,7 +118,8 @@ public class CommandHandler implements CommandExecutor, TabCompleter {
         sender.sendMessage("§e/sg flag <pattern> <flag> <value> §7- Set flags on rules & regions");
         sender.sendMessage("§e/sg addowner <pattern> <player|g:group> §7- Add region owner");
         sender.sendMessage("§e/sg addmember <pattern> <player|g:group> §7- Add region member");
-        sender.sendMessage("§e/sg clearregions <pattern> §7- Remove WorldGuard regions");
+        sender.sendMessage("§e/sg clearregions <pattern> [world] §7- Remove WorldGuard regions");
+        sender.sendMessage("§e/sg resetworld <world> §7- Clear all data for a world (for resets)");
         sender.sendMessage("");
         sender.sendMessage("§e§lUtility:");
         sender.sendMessage("§e/sg list <pattern> §7- List protected structures");
@@ -903,6 +906,59 @@ public class CommandHandler implements CommandExecutor, TabCompleter {
         return true;
     }
     
+    /**
+     * Reset a world completely - remove all regions, structures, and scan history.
+     * Used when resetting resource worlds.
+     */
+    private boolean cmdResetWorld(CommandSender sender, String[] args) {
+        if (!sender.hasPermission("structureguard.admin")) {
+            sender.sendMessage("§cNo permission.");
+            return true;
+        }
+        
+        if (args.length < 2) {
+            sender.sendMessage("§cUsage: /sg resetworld <world>");
+            sender.sendMessage("§7Removes all StructureGuard data for a world.");
+            sender.sendMessage("§7Use this before resetting a resource world.");
+            return true;
+        }
+        
+        String worldName = args[1];
+        
+        // Confirmation check
+        if (args.length < 3 || !args[2].equalsIgnoreCase("confirm")) {
+            sender.sendMessage("§e⚠ This will remove ALL StructureGuard data for world: §f" + worldName);
+            sender.sendMessage("§7  - All WorldGuard regions (sg_* prefix)");
+            sender.sendMessage("§7  - All structure records in database");
+            sender.sendMessage("§7  - All chunk scan history");
+            sender.sendMessage("");
+            sender.sendMessage("§cType: /sg resetworld " + worldName + " confirm");
+            return true;
+        }
+        
+        sender.sendMessage("§7Resetting world: " + worldName + "...");
+        
+        // 1. Remove all WorldGuard regions
+        int regionsRemoved = plugin.getRegionManager().clearAllStructureGuardRegionsInWorld(worldName);
+        
+        // 2. Remove all structures from database for this world
+        int structuresRemoved = plugin.getDatabase().clearWorld(worldName);
+        
+        // 3. Clear scanned chunks for this world
+        int chunksCleared = plugin.getDatabase().clearScannedChunks(worldName);
+        
+        // 4. Clear memory cache for this world
+        plugin.getChunkLoadListener().clearWorldCache(worldName);
+        
+        sender.sendMessage("§a✓ World reset complete: §f" + worldName);
+        sender.sendMessage("§7  Regions removed: " + regionsRemoved);
+        sender.sendMessage("§7  Structures cleared: " + structuresRemoved);
+        sender.sendMessage("§7  Chunks unmarked: " + chunksCleared);
+        sender.sendMessage("§7The world is now ready for regeneration.");
+        
+        return true;
+    }
+    
     private boolean cmdAddOwner(CommandSender sender, String[] args) {
         if (!sender.hasPermission("structureguard.admin")) {
             sender.sendMessage("§cNo permission.");
@@ -1145,7 +1201,7 @@ public class CommandHandler implements CommandExecutor, TabCompleter {
             completions.addAll(Arrays.asList(
                 "find", "listall", "info",
                 "protect", "unprotect", "enable", "disable", "rules",
-                "flag", "clearregions", "addowner", "removeowner", "addmember", "removemember",
+                "flag", "clearregions", "resetworld", "addowner", "removeowner", "addmember", "removemember",
                 "list", "status", "reload", "debug"
             ));
         } else if (args.length == 2) {
@@ -1173,6 +1229,12 @@ public class CommandHandler implements CommandExecutor, TabCompleter {
                 case "unprotect":
                 case "disable":
                     completions.addAll(plugin.getConfigManager().getProtectionRules().keySet());
+                    break;
+                case "resetworld":
+                    // List all world names
+                    for (org.bukkit.World w : plugin.getServer().getWorlds()) {
+                        completions.add(w.getName());
+                    }
                     break;
                 case "flag":
                 case "clearregions":

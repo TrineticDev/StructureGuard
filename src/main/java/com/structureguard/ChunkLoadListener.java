@@ -47,6 +47,11 @@ public class ChunkLoadListener implements Listener {
         Chunk chunk = event.getChunk();
         World world = chunk.getWorld();
         
+        // Skip disabled worlds (e.g., resource worlds)
+        if (plugin.getConfigManager().isWorldDisabled(world.getName())) {
+            return;
+        }
+        
         // Skip if already processed this session
         long chunkKey = packChunkCoords(chunk.getX(), chunk.getZ());
         if (processedChunks.contains(chunkKey)) {
@@ -197,6 +202,16 @@ public class ChunkLoadListener implements Listener {
     public void clearCache() {
         processedChunks.clear();
         // Don't reset counters - they track session totals
+    }
+    
+    /**
+     * Clear cache for a specific world (used when resetting a world).
+     */
+    public void clearWorldCache(String worldName) {
+        // We can't easily filter the packed coords by world, so just clear all
+        // This is fine since database check will prevent re-processing
+        processedChunks.clear();
+        plugin.getConfigManager().debug("Cleared chunk cache for world reset: " + worldName);
     }
     
     /**

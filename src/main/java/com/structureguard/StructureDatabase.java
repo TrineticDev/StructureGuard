@@ -221,6 +221,22 @@ public class StructureDatabase {
     }
     
     /**
+     * Clear all structure records for a world (for world reset).
+     */
+    public int clearWorld(String world) {
+        try {
+            PreparedStatement stmt = connection.prepareStatement(
+                "DELETE FROM structures WHERE world = ?"
+            );
+            stmt.setString(1, world);
+            return stmt.executeUpdate();
+        } catch (SQLException e) {
+            plugin.getLogger().warning("Failed to clear world structures: " + e.getMessage());
+            return 0;
+        }
+    }
+    
+    /**
      * Get count of scanned chunks for a world.
      */
     public int getScannedChunkCount(String world) {

@@ -17,10 +17,10 @@ default-y-min: -64
 default-y-max: 320
 
 # Default WorldGuard flags applied to new regions
+# Note: WorldGuard already denies block-break/place by default in regions
+# Only specify flags here that you want to change from WorldGuard defaults
 # Customize per-structure with /sg flag <pattern> <flag> <value>
 default-flags:
-  block-break: deny
-  block-place: deny
   use: allow
   interact: allow
   creeper-explosion: deny

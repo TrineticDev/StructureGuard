@@ -43,10 +43,8 @@ public class ConfigManager {
                 defaultFlags.put(key, config.getString("default-flags." + key));
             }
         }
-        if (defaultFlags.isEmpty()) {
-            defaultFlags.put("block-break", "deny");
-            defaultFlags.put("block-place", "deny");
-        }
+        // Note: WorldGuard already denies block-break/place by default in regions
+        // so we don't need to set them unless the user wants to override
         
         // Load protected structures
         protectionRules.clear();
@@ -301,9 +299,8 @@ public class ConfigManager {
         public Map<String, String> flags = new HashMap<>();
         
         public ProtectionRule() {
-            // Default flags
-            flags.put("block-break", "deny");
-            flags.put("block-place", "deny");
+            // Note: WorldGuard already denies block-break/place by default
+            // Flags here are only for overrides or extra protections
         }
     }
 }

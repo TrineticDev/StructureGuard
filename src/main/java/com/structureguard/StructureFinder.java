@@ -1615,18 +1615,14 @@ public class StructureFinder {
     private List<StructureResult> getStructuresInChunkAsync(int chunkX, int chunkZ) {
         List<StructureResult> results = new ArrayList<>();
         
-        plugin.getConfigManager().debug("getStructuresInChunkAsync: chunk " + chunkX + "," + chunkZ + 
-            ", useFabricPath=" + useFabricPath + 
-            ", chunkMethod=" + (chunkGetStructureStartsMethod != null ? chunkGetStructureStartsMethod.getName() : "null"));
+        // Debug logging removed to prevent lag - use /sg debug for one-time diagnostics
         
         try {
             if (useFabricPath) {
                 // Chunk-based path: use Chunk.getStructureStarts/getAllStarts()
-                plugin.getConfigManager().debug("Using Fabric chunk path");
                 results = getStructuresViaChunkFabric(chunkX, chunkZ);
             } else {
                 // Mojang path: use StructureManager.getAllStructuresAt()
-                plugin.getConfigManager().debug("Using Mojang path");
                 results = getStructuresViaMojang(chunkX, chunkZ);
                 
                 // If Mojang path returns nothing but we have the chunk method, try chunk path as fallback

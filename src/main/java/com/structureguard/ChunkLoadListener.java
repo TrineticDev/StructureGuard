@@ -53,15 +53,26 @@ public class ChunkLoadListener implements Listener {
             return;
         }
         
+        // Also check database for chunks scanned in previous sessions
+        if (plugin.getDatabase().isChunkScanned(world.getName(), chunk.getX(), chunk.getZ())) {
+            processedChunks.add(chunkKey); // Add to memory cache too
+            return;
+        }
+        
         // Process asynchronously to avoid blocking chunk load
         final int chunkX = chunk.getX();
         final int chunkZ = chunk.getZ();
+        final String worldName = world.getName();
         
         plugin.getServer().getScheduler().runTaskAsynchronously(plugin, () -> {
             try {
                 processChunkStructures(world, chunkX, chunkZ);
                 processedChunks.add(chunkKey);
                 processedChunkCount.incrementAndGet();
+                
+                // Mark as scanned in database for persistence across restarts
+                plugin.getDatabase().markChunksScanned(worldName, 
+                    java.util.Collections.singletonList(new int[]{chunkX, chunkZ}));
             } catch (Exception e) {
                 plugin.getConfigManager().debug("Error processing chunk " + chunkX + "," + chunkZ + ": " + e.getMessage());
             }
@@ -81,24 +92,23 @@ public class ChunkLoadListener implements Listener {
                 return;
             }
             
-            plugin.getConfigManager().debug("Found " + structures.size() + " structures in chunk " + 
-                chunkX + "," + chunkZ);
+            // Only log when we actually find structures worth mentioning
+            int protectable = 0;
             
             for (StructureFinder.StructureResult structure : structures) {
                 // Check if this structure type should be protected
                 ConfigManager.ProtectionRule rule = plugin.getConfigManager().getProtectionRule(structure.structureType);
                 if (rule == null || !rule.enabled) {
-                    plugin.getConfigManager().debug("Structure " + structure.structureType + " not in protection list, skipping");
                     continue;
                 }
                 
                 // Check if already protected in database
                 if (plugin.getDatabase().isStructureProtected(world.getName(), structure.structureType, 
                         structure.x, structure.z)) {
-                    plugin.getConfigManager().debug("Structure already protected: " + structure.structureType + 
-                        " at " + structure.x + "," + structure.z);
                     continue;
                 }
+                
+                protectable++;
                 
                 // Create protection on main thread (WorldGuard requires it)
                 final StructureFinder.StructureResult finalStructure = structure;
@@ -107,6 +117,11 @@ public class ChunkLoadListener implements Listener {
                 plugin.getServer().getScheduler().runTask(plugin, () -> {
                     createProtection(world, finalStructure, finalRule);
                 });
+            }
+            
+            if (protectable > 0) {
+                plugin.getConfigManager().debug("Protecting " + protectable + " structures in chunk " + 
+                    chunkX + "," + chunkZ);
             }
             
         } catch (Exception e) {

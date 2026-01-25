@@ -143,30 +143,48 @@ public class ChunkLoadListener implements Listener {
     
     /**
      * Process a single chunk task.
+     * Database check is done async, but structure detection must be on main thread.
      */
     private void processChunkTask(ChunkTask task) {
         try {
-            // Check database for chunks scanned in previous sessions (deferred from event handler)
+            // Check database for chunks scanned in previous sessions (can be done async)
             if (plugin.getDatabase().isChunkScanned(task.worldName, task.chunkX, task.chunkZ)) {
                 processedChunks.add(task.chunkKey); // Add to memory cache
                 return;
             }
             
-            processChunkStructures(task.world, task.chunkX, task.chunkZ);
-            processedChunks.add(task.chunkKey);
-            processedChunkCount.incrementAndGet();
-            
-            // Add to buffer instead of immediate DB write (per-world)
-            List<int[]> buffer = scannedChunkBuffers.computeIfAbsent(task.worldName, 
-                k -> Collections.synchronizedList(new ArrayList<>()));
-            buffer.add(new int[]{task.chunkX, task.chunkZ});
-            
-            // Flush if buffer is full for this world
-            if (buffer.size() >= BATCH_FLUSH_SIZE) {
-                flushWorldBuffer(task.worldName);
-            }
+            // Schedule structure detection on main thread (required for NMS access)
+            plugin.getServer().getScheduler().runTask(plugin, () -> {
+                try {
+                    processChunkStructuresMainThread(task);
+                } catch (Exception e) {
+                    plugin.getConfigManager().debug("Error processing chunk on main thread: " + e.getMessage());
+                }
+            });
         } catch (Exception e) {
             plugin.getConfigManager().debug("Error processing chunk " + task.chunkX + "," + task.chunkZ + ": " + e.getMessage());
+        }
+    }
+    
+    /**
+     * Process chunk structures on main thread (required for NMS/reflection access).
+     */
+    private void processChunkStructuresMainThread(ChunkTask task) {
+        processChunkStructures(task.world, task.chunkX, task.chunkZ);
+        processedChunks.add(task.chunkKey);
+        processedChunkCount.incrementAndGet();
+        
+        // Add to buffer for batch DB write (thread-safe)
+        List<int[]> buffer = scannedChunkBuffers.computeIfAbsent(task.worldName, 
+            k -> Collections.synchronizedList(new ArrayList<>()));
+        buffer.add(new int[]{task.chunkX, task.chunkZ});
+        
+        // Flush if buffer is full for this world
+        if (buffer.size() >= BATCH_FLUSH_SIZE) {
+            // Schedule DB write async to not block main thread
+            plugin.getServer().getScheduler().runTaskAsynchronously(plugin, () -> {
+                flushWorldBuffer(task.worldName);
+            });
         }
     }
     

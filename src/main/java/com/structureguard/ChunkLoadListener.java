@@ -35,8 +35,8 @@ public class ChunkLoadListener implements Listener {
     private final AtomicLong processedChunkCount = new AtomicLong(0);
     private final AtomicLong protectedStructureCount = new AtomicLong(0);
     
-    // Queue for pending chunks - bounded to prevent memory issues
-    private static final int MAX_QUEUE_SIZE = 1000;
+    // Queue for pending chunks - unbounded because skipping chunks defeats the plugin's purpose
+    // Memory usage is minimal (~100 bytes per entry), so even 10k chunks = 1MB
     private final Queue<ChunkTask> chunkQueue = new ConcurrentLinkedQueue<>();
     
     // Rate limiting - chunks processed per tick (20 ticks = 1 second)
@@ -209,13 +209,8 @@ public class ChunkLoadListener implements Listener {
             return;
         }
         
-        // Limit queue size to prevent memory issues
-        if (chunkQueue.size() >= MAX_QUEUE_SIZE) {
-            plugin.getConfigManager().debug("Chunk queue full, skipping chunk " + chunk.getX() + "," + chunk.getZ());
-            return;
-        }
-        
         // Queue the chunk for processing (instant, non-blocking)
+        // Never skip - the whole point of the plugin is to protect structures
         ChunkTask task = new ChunkTask(world, chunk.getX(), chunk.getZ(), world.getName(), chunkKey);
         chunkQueue.offer(task);
     }

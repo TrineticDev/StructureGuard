@@ -32,8 +32,7 @@ public class ChunkLoadListener implements Listener {
     private final AtomicLong processedChunkCount = new AtomicLong(0);
     private final AtomicLong protectedStructureCount = new AtomicLong(0);
     
-    // Bounded executor to prevent thread explosion (max 2 worker threads)
-    private static final int MAX_WORKER_THREADS = 2;
+    // Single-thread executor for queue processing (prevents thread explosion)
     private final ExecutorService chunkExecutor;
     
     // Queue for pending chunks - bounded to prevent memory issues
@@ -70,19 +69,13 @@ public class ChunkLoadListener implements Listener {
         // Use a bounded queue - if full, new chunks are dropped (they'll be processed next load)
         this.chunkQueue = new LinkedBlockingQueue<>(MAX_QUEUE_SIZE);
         
-        // Create a fixed thread pool with bounded size - CRITICAL to prevent thread explosion
-        this.chunkExecutor = new ThreadPoolExecutor(
-            1,                          // core pool size
-            MAX_WORKER_THREADS,         // max pool size
-            60L, TimeUnit.SECONDS,      // idle thread timeout
-            new LinkedBlockingQueue<>(MAX_QUEUE_SIZE), // bounded work queue
-            r -> {
-                Thread t = new Thread(r, "StructureGuard-Worker");
-                t.setDaemon(true);
-                return t;
-            },
-            new ThreadPoolExecutor.DiscardPolicy() // Drop tasks if overloaded (chunk will be processed next time)
-        );
+        // Create a single-thread executor for the queue processor
+        // This is separate from the chunk queue - it just runs our processor loop
+        this.chunkExecutor = Executors.newSingleThreadExecutor(r -> {
+            Thread t = new Thread(r, "StructureGuard-Worker");
+            t.setDaemon(true);
+            return t;
+        });
         
         // Start the worker that processes the queue
         startQueueProcessor();
@@ -97,23 +90,29 @@ public class ChunkLoadListener implements Listener {
      */
     private void startQueueProcessor() {
         chunkExecutor.submit(() -> {
-            while (!Thread.currentThread().isInterrupted()) {
-                try {
-                    // Take a chunk from the queue (blocks if empty)
-                    ChunkTask task = chunkQueue.poll(1, TimeUnit.SECONDS);
-                    if (task == null) continue;
-                    
-                    processChunkTask(task);
-                    
-                    // Small delay between chunks to prevent CPU spikes
-                    Thread.sleep(10);
-                    
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    break;
-                } catch (Exception e) {
-                    plugin.getConfigManager().debug("Queue processor error: " + e.getMessage());
+            plugin.getLogger().info("Chunk processor started");
+            try {
+                while (!Thread.currentThread().isInterrupted()) {
+                    try {
+                        // Take a chunk from the queue (blocks if empty)
+                        ChunkTask task = chunkQueue.poll(1, TimeUnit.SECONDS);
+                        if (task == null) continue;
+                        
+                        processChunkTask(task);
+                        
+                        // Small delay between chunks to prevent CPU spikes
+                        Thread.sleep(10);
+                        
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        break;
+                    } catch (Exception e) {
+                        plugin.getLogger().warning("Queue processor error: " + e.getMessage());
+                        e.printStackTrace();
+                    }
                 }
+            } finally {
+                plugin.getLogger().info("Chunk processor stopped");
             }
         });
     }

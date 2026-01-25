@@ -6,6 +6,7 @@ import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
 import org.bukkit.event.world.ChunkLoadEvent;
+import org.bukkit.scheduler.BukkitTask;
 
 import java.util.*;
 import java.util.concurrent.*;
@@ -18,8 +19,10 @@ import java.util.concurrent.atomic.AtomicLong;
  * This is the core of the on-demand protection system - no pre-scanning needed.
  * Structures are protected as their origin chunks are loaded/generated.
  * 
- * Uses a bounded thread pool and chunk queue to prevent thread explosion
- * when many chunks load simultaneously (e.g., mass player login).
+ * Uses a tick-based processor to prevent lag:
+ * - Chunks are queued as they load (instant, non-blocking)
+ * - A scheduled task processes up to N chunks per tick
+ * - DB writes are batched and done async
  */
 public class ChunkLoadListener implements Listener {
     
@@ -32,12 +35,12 @@ public class ChunkLoadListener implements Listener {
     private final AtomicLong processedChunkCount = new AtomicLong(0);
     private final AtomicLong protectedStructureCount = new AtomicLong(0);
     
-    // Single-thread executor for queue processing (prevents thread explosion)
-    private final ExecutorService chunkExecutor;
-    
     // Queue for pending chunks - bounded to prevent memory issues
-    private static final int MAX_QUEUE_SIZE = 500;
-    private final BlockingQueue<ChunkTask> chunkQueue;
+    private static final int MAX_QUEUE_SIZE = 1000;
+    private final Queue<ChunkTask> chunkQueue = new ConcurrentLinkedQueue<>();
+    
+    // Rate limiting - chunks processed per tick (20 ticks = 1 second)
+    private static final int CHUNKS_PER_TICK = 5;
     
     // Batch buffer for marking chunks as scanned (reduces DB writes)
     // Maps worldName -> list of chunk coords
@@ -45,6 +48,10 @@ public class ChunkLoadListener implements Listener {
     private static final int BATCH_FLUSH_SIZE = 50;
     private volatile long lastFlushTime = System.currentTimeMillis();
     private static final long BATCH_FLUSH_INTERVAL_MS = 5000; // Flush every 5 seconds at minimum
+    
+    // Scheduler tasks
+    private BukkitTask processorTask;
+    private BukkitTask flushTask;
     
     // Simple record to hold pending chunk info
     private static class ChunkTask {
@@ -66,62 +73,45 @@ public class ChunkLoadListener implements Listener {
     public ChunkLoadListener(StructureGuardPlugin plugin) {
         this.plugin = plugin;
         
-        // Use a bounded queue - if full, new chunks are dropped (they'll be processed next load)
-        this.chunkQueue = new LinkedBlockingQueue<>(MAX_QUEUE_SIZE);
+        // Start the tick-based processor (runs every tick on main thread)
+        startTickProcessor();
         
-        // Create a single-thread executor for the queue processor
-        // This is separate from the chunk queue - it just runs our processor loop
-        this.chunkExecutor = Executors.newSingleThreadExecutor(r -> {
-            Thread t = new Thread(r, "StructureGuard-Worker");
-            t.setDaemon(true);
-            return t;
-        });
-        
-        // Start the worker that processes the queue
-        startQueueProcessor();
-        
-        // Start the periodic batch flush task
+        // Start the periodic batch flush task (runs async)
         startBatchFlushTask();
+        
+        plugin.getLogger().info("Chunk processor started (max " + CHUNKS_PER_TICK + " chunks/tick)");
     }
     
     /**
-     * Start a single worker that processes chunks from the queue.
-     * This ensures controlled, sequential processing.
+     * Start the tick-based processor.
+     * Runs every tick on main thread, processes up to CHUNKS_PER_TICK chunks.
+     * This spreads the load evenly and prevents lag spikes.
      */
-    private void startQueueProcessor() {
-        chunkExecutor.submit(() -> {
-            plugin.getLogger().info("Chunk processor started");
-            try {
-                while (!Thread.currentThread().isInterrupted()) {
-                    try {
-                        // Take a chunk from the queue (blocks if empty)
-                        ChunkTask task = chunkQueue.poll(1, TimeUnit.SECONDS);
-                        if (task == null) continue;
-                        
-                        processChunkTask(task);
-                        
-                        // Small delay between chunks to prevent CPU spikes
-                        Thread.sleep(10);
-                        
-                    } catch (InterruptedException e) {
-                        Thread.currentThread().interrupt();
-                        break;
-                    } catch (Exception e) {
-                        plugin.getLogger().warning("Queue processor error: " + e.getMessage());
-                        e.printStackTrace();
-                    }
+    private void startTickProcessor() {
+        processorTask = plugin.getServer().getScheduler().runTaskTimer(plugin, () -> {
+            int processed = 0;
+            
+            while (processed < CHUNKS_PER_TICK && !chunkQueue.isEmpty()) {
+                ChunkTask task = chunkQueue.poll();
+                if (task == null) break;
+                
+                // Skip if already processed (race condition check)
+                if (processedChunks.contains(task.chunkKey)) {
+                    continue;
                 }
-            } finally {
-                plugin.getLogger().info("Chunk processor stopped");
+                
+                // Process this chunk
+                processChunkTask(task);
+                processed++;
             }
-        });
+        }, 1L, 1L); // Every tick (1 tick = 50ms)
     }
     
     /**
      * Start a periodic task to flush the scanned chunk buffer to the database.
      */
     private void startBatchFlushTask() {
-        plugin.getServer().getScheduler().runTaskTimerAsynchronously(plugin, () -> {
+        flushTask = plugin.getServer().getScheduler().runTaskTimerAsynchronously(plugin, () -> {
             flushAllBuffers(false);
         }, 100L, 100L); // Every 5 seconds (100 ticks)
     }
@@ -142,49 +132,36 @@ public class ChunkLoadListener implements Listener {
     }
     
     /**
-     * Process a single chunk task.
-     * Database check is done async, but structure detection must be on main thread.
+     * Process a single chunk task (runs on main thread).
      */
     private void processChunkTask(ChunkTask task) {
         try {
-            // Check database for chunks scanned in previous sessions (can be done async)
+            // Check database for chunks scanned in previous sessions
+            // This is a quick SQLite lookup, fine on main thread
             if (plugin.getDatabase().isChunkScanned(task.worldName, task.chunkX, task.chunkZ)) {
                 processedChunks.add(task.chunkKey); // Add to memory cache
                 return;
             }
             
-            // Schedule structure detection on main thread (required for NMS access)
-            plugin.getServer().getScheduler().runTask(plugin, () -> {
-                try {
-                    processChunkStructuresMainThread(task);
-                } catch (Exception e) {
-                    plugin.getConfigManager().debug("Error processing chunk on main thread: " + e.getMessage());
-                }
-            });
+            // Process structures (main thread - required for NMS access)
+            processChunkStructures(task.world, task.chunkX, task.chunkZ);
+            processedChunks.add(task.chunkKey);
+            processedChunkCount.incrementAndGet();
+            
+            // Add to buffer for batch DB write (thread-safe)
+            List<int[]> buffer = scannedChunkBuffers.computeIfAbsent(task.worldName, 
+                k -> Collections.synchronizedList(new ArrayList<>()));
+            buffer.add(new int[]{task.chunkX, task.chunkZ});
+            
+            // Flush if buffer is full for this world (async)
+            if (buffer.size() >= BATCH_FLUSH_SIZE) {
+                final String worldName = task.worldName;
+                plugin.getServer().getScheduler().runTaskAsynchronously(plugin, () -> {
+                    flushWorldBuffer(worldName);
+                });
+            }
         } catch (Exception e) {
             plugin.getConfigManager().debug("Error processing chunk " + task.chunkX + "," + task.chunkZ + ": " + e.getMessage());
-        }
-    }
-    
-    /**
-     * Process chunk structures on main thread (required for NMS/reflection access).
-     */
-    private void processChunkStructuresMainThread(ChunkTask task) {
-        processChunkStructures(task.world, task.chunkX, task.chunkZ);
-        processedChunks.add(task.chunkKey);
-        processedChunkCount.incrementAndGet();
-        
-        // Add to buffer for batch DB write (thread-safe)
-        List<int[]> buffer = scannedChunkBuffers.computeIfAbsent(task.worldName, 
-            k -> Collections.synchronizedList(new ArrayList<>()));
-        buffer.add(new int[]{task.chunkX, task.chunkZ});
-        
-        // Flush if buffer is full for this world
-        if (buffer.size() >= BATCH_FLUSH_SIZE) {
-            // Schedule DB write async to not block main thread
-            plugin.getServer().getScheduler().runTaskAsynchronously(plugin, () -> {
-                flushWorldBuffer(task.worldName);
-            });
         }
     }
     
@@ -232,20 +209,15 @@ public class ChunkLoadListener implements Listener {
             return;
         }
         
-        // Fast path: check in-memory cache for scanned chunks
-        // Don't hit the database in the event handler - defer to the queue processor
-        
-        // Queue the chunk for async processing (non-blocking)
-        final int chunkX = chunk.getX();
-        final int chunkZ = chunk.getZ();
-        final String worldName = world.getName();
-        
-        ChunkTask task = new ChunkTask(world, chunkX, chunkZ, worldName, chunkKey);
-        
-        // Offer to queue - returns false if full (chunk will be picked up next time it loads)
-        if (!chunkQueue.offer(task)) {
-            plugin.getConfigManager().debug("Chunk queue full, skipping chunk " + chunkX + "," + chunkZ);
+        // Limit queue size to prevent memory issues
+        if (chunkQueue.size() >= MAX_QUEUE_SIZE) {
+            plugin.getConfigManager().debug("Chunk queue full, skipping chunk " + chunk.getX() + "," + chunk.getZ());
+            return;
         }
+        
+        // Queue the chunk for processing (instant, non-blocking)
+        ChunkTask task = new ChunkTask(world, chunk.getX(), chunk.getZ(), world.getName(), chunkKey);
+        chunkQueue.offer(task);
     }
     
     /**
@@ -279,13 +251,8 @@ public class ChunkLoadListener implements Listener {
                 
                 protectable++;
                 
-                // Create protection on main thread (WorldGuard requires it)
-                final StructureFinder.StructureResult finalStructure = structure;
-                final ConfigManager.ProtectionRule finalRule = rule;
-                
-                plugin.getServer().getScheduler().runTask(plugin, () -> {
-                    createProtection(world, finalStructure, finalRule);
-                });
+                // Create protection (we're already on main thread)
+                createProtection(world, structure, rule);
             }
             
             if (protectable > 0) {
@@ -388,23 +355,21 @@ public class ChunkLoadListener implements Listener {
     
     /**
      * Shutdown the chunk processor gracefully.
-     * Flushes pending data and stops worker threads.
+     * Flushes pending data and stops tasks.
      */
     public void shutdown() {
         plugin.getConfigManager().debug("Shutting down chunk processor...");
         
+        // Cancel scheduled tasks
+        if (processorTask != null) {
+            processorTask.cancel();
+        }
+        if (flushTask != null) {
+            flushTask.cancel();
+        }
+        
         // Flush any pending scanned chunks to database
         flushAllBuffers(true);
-        
-        // Shutdown the executor
-        chunkExecutor.shutdownNow();
-        try {
-            if (!chunkExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
-                plugin.getLogger().warning("Chunk processor did not terminate in time");
-            }
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        }
         
         // Clear the queue and buffers
         chunkQueue.clear();

@@ -159,19 +159,45 @@ public class RegionManager {
     /**
      * Apply flags from a map to a region.
      */
+    @SuppressWarnings("unchecked")
     private void applyFlags(ProtectedRegion region, Map<String, String> flags) {
         for (Map.Entry<String, String> entry : flags.entrySet()) {
             String flagName = entry.getKey();
             String flagValue = entry.getValue();
             
             try {
-                Flag<?> flag = Flags.fuzzyMatchFlag(WorldGuard.getInstance().getFlagRegistry(), flagName);
+                FlagRegistry flagRegistry = WorldGuard.getInstance().getFlagRegistry();
+                Flag<?> flag = flagRegistry.get(flagName);
+                
+                if (flag == null) {
+                    flag = Flags.fuzzyMatchFlag(flagRegistry, flagName);
+                }
+                
+                if (flag == null) {
+                    plugin.getConfigManager().debug("Unknown flag: " + flagName);
+                    continue;
+                }
+                
                 if (flag instanceof StateFlag) {
+                    // Handle state flags (allow/deny)
                     StateFlag stateFlag = (StateFlag) flag;
                     if ("allow".equalsIgnoreCase(flagValue)) {
                         region.setFlag(stateFlag, StateFlag.State.ALLOW);
                     } else if ("deny".equalsIgnoreCase(flagValue)) {
                         region.setFlag(stateFlag, StateFlag.State.DENY);
+                    }
+                } else {
+                    // Handle other flag types (StringFlag, etc.)
+                    try {
+                        FlagContext context = FlagContext.create()
+                            .setSender(com.sk89q.worldguard.bukkit.WorldGuardPlugin.inst().wrapCommandSender(Bukkit.getConsoleSender()))
+                            .setInput(flagValue)
+                            .build();
+                        Object parsedValue = flag.parseInput(context);
+                        region.setFlag((Flag<Object>) flag, parsedValue);
+                        plugin.getConfigManager().debug("Set flag " + flagName + " = " + flagValue);
+                    } catch (Exception e) {
+                        plugin.getConfigManager().debug("Failed to parse flag " + flagName + ": " + e.getMessage());
                     }
                 }
             } catch (Exception e) {
@@ -717,11 +743,102 @@ public class RegionManager {
     
     /**
      * Sync region settings from config file.
+     * Updates all existing regions with the current flags from their matching protection rules.
      */
+    @SuppressWarnings("unchecked")
     public void syncFromConfig() {
-        // This would read manual edits from config and apply to regions
+        if (!worldGuardAvailable) {
+            plugin.getLogger().warning("WorldGuard not available - cannot sync regions");
+            return;
+        }
+        
         plugin.getLogger().info("Syncing region settings from config...");
-        // Implementation depends on config format
+        
+        int updatedCount = 0;
+        int errorCount = 0;
+        
+        // Get all protected structures from database
+        List<StructureDatabase.StructureInfo> structures = plugin.getDatabase().getProtectedStructures("");
+        
+        for (StructureDatabase.StructureInfo info : structures) {
+            if (info.regionId == null) continue;
+            
+            try {
+                World bukkitWorld = Bukkit.getWorld(info.world);
+                if (bukkitWorld == null) continue;
+                
+                com.sk89q.worldedit.world.World weWorld = BukkitAdapter.adapt(bukkitWorld);
+                com.sk89q.worldguard.protection.managers.RegionManager regionManager = 
+                    WorldGuard.getInstance().getPlatform().getRegionContainer().get(weWorld);
+                
+                if (regionManager == null) continue;
+                
+                ProtectedRegion region = regionManager.getRegion(info.regionId);
+                if (region == null) continue;
+                
+                // Get the protection rule for this structure type
+                ConfigManager.ProtectionRule rule = plugin.getConfigManager().getProtectionRule(info.type);
+                
+                // Determine which flags to apply
+                Map<String, String> flagsToApply;
+                if (rule != null && rule.flags != null && !rule.flags.isEmpty()) {
+                    // Use rule-specific flags (which already include defaults merged in)
+                    flagsToApply = rule.flags;
+                } else {
+                    // Fall back to default flags only
+                    flagsToApply = plugin.getConfigManager().getDefaultFlags();
+                }
+                
+                // Apply flags to region
+                for (Map.Entry<String, String> entry : flagsToApply.entrySet()) {
+                    String flagName = entry.getKey();
+                    String flagValue = entry.getValue();
+                    
+                    try {
+                        FlagRegistry flagRegistry = WorldGuard.getInstance().getFlagRegistry();
+                        Flag<?> flag = flagRegistry.get(flagName);
+                        
+                        if (flag == null) {
+                            flag = Flags.fuzzyMatchFlag(flagRegistry, flagName);
+                        }
+                        
+                        if (flag == null) {
+                            plugin.getConfigManager().debug("Unknown flag: " + flagName);
+                            continue;
+                        }
+                        
+                        if (flag instanceof StateFlag) {
+                            // Handle state flags (allow/deny)
+                            if (flagValue.equalsIgnoreCase("allow")) {
+                                region.setFlag((StateFlag) flag, StateFlag.State.ALLOW);
+                            } else if (flagValue.equalsIgnoreCase("deny")) {
+                                region.setFlag((StateFlag) flag, StateFlag.State.DENY);
+                            }
+                        } else {
+                            // Handle other flag types (StringFlag, etc.)
+                            FlagContext context = FlagContext.create()
+                                .setSender(com.sk89q.worldguard.bukkit.WorldGuardPlugin.inst().wrapCommandSender(Bukkit.getConsoleSender()))
+                                .setInput(flagValue)
+                                .build();
+                            Object parsedValue = flag.parseInput(context);
+                            region.setFlag((Flag<Object>) flag, parsedValue);
+                        }
+                    } catch (Exception e) {
+                        plugin.getConfigManager().debug("Failed to set flag " + flagName + " on " + info.regionId + ": " + e.getMessage());
+                    }
+                }
+                
+                updatedCount++;
+                plugin.getConfigManager().debug("Synced flags for region: " + info.regionId);
+                
+            } catch (Exception e) {
+                errorCount++;
+                plugin.getConfigManager().debug("Failed to sync region " + info.regionId + ": " + e.getMessage());
+            }
+        }
+        
+        plugin.getLogger().info("Synced " + updatedCount + " regions from config" + 
+            (errorCount > 0 ? " (" + errorCount + " errors)" : ""));
     }
     
     /**

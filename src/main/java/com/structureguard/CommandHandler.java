@@ -384,35 +384,46 @@ public class CommandHandler implements CommandExecutor, TabCompleter {
         player.sendMessage("§7Location: §f" + loc.getBlockX() + ", " + loc.getBlockY() + ", " + loc.getBlockZ());
         player.sendMessage("§7Chunk: §f" + chunkX + ", " + chunkZ);
         
-        // Debug: Check if reflection is still initialized
         plugin.getConfigManager().debug("cmdInfo: checking structures near chunk " + chunkX + "," + chunkZ);
         
-        // Check structures in current AND neighboring chunks (3x3 area)
-        List<StructureFinder.StructureResult> allStructures = new ArrayList<>();
+        // Check structures SPANNING current AND neighboring chunks (3x3 area)
+        // This finds structures you're standing in, even if not at the origin
+        Map<String, StructureFinder.StructureResult> uniqueStructures = new LinkedHashMap<>();
+        
         for (int dx = -1; dx <= 1; dx++) {
             for (int dz = -1; dz <= 1; dz++) {
                 List<StructureFinder.StructureResult> structures = 
-                    plugin.getStructureFinder().getStructuresInChunk(player.getWorld(), chunkX + dx, chunkZ + dz);
-                allStructures.addAll(structures);
+                    plugin.getStructureFinder().getStructuresSpanningChunk(player.getWorld(), chunkX + dx, chunkZ + dz);
+                
+                for (StructureFinder.StructureResult s : structures) {
+                    // Deduplicate by structure type + origin coordinates
+                    String key = s.structureType + "@" + s.x + "," + s.z;
+                    if (!uniqueStructures.containsKey(key)) {
+                        uniqueStructures.put(key, s);
+                    }
+                }
             }
         }
         
-        plugin.getConfigManager().debug("cmdInfo: found " + allStructures.size() + " structures in 3x3 chunk area");
+        plugin.getConfigManager().debug("cmdInfo: found " + uniqueStructures.size() + " unique structures in 3x3 chunk area");
         
-        if (!allStructures.isEmpty()) {
-            player.sendMessage("§7Structures in chunk:");
-            for (StructureFinder.StructureResult s : allStructures) {
+        if (!uniqueStructures.isEmpty()) {
+            player.sendMessage("§7Structures in this area:");
+            for (StructureFinder.StructureResult s : uniqueStructures.values()) {
                 plugin.getConfigManager().debug("cmdInfo: structure " + s.structureType + " at " + s.x + "," + s.z);
                 boolean isProtected = plugin.getDatabase().isStructureProtected(
                     player.getWorld().getName(), s.structureType, s.x, s.z);
                 String status = isProtected ? " §a(protected)" : " §7(unprotected)";
                 
+                // Calculate distance to origin
+                double dist = Math.sqrt(Math.pow(s.x - loc.getBlockX(), 2) + Math.pow(s.z - loc.getBlockZ(), 2));
+                String distStr = " §8(" + String.format("%.0f", dist) + "b to origin)";
+                
                 // Check if there's a matching rule
                 ConfigManager.ProtectionRule rule = findMatchingRule(s.structureType);
                 if (rule != null && !isProtected) {
                     status = " §7(unprotected)";
-                    // Offer to protect it now
-                    player.sendMessage("  §e" + s.structureType + status);
+                    player.sendMessage("  §e" + s.structureType + status + distStr);
                     
                     // Create clickable protection message
                     TextComponent protectLink = new TextComponent("    §a[Click to Protect]");
@@ -422,11 +433,11 @@ public class CommandHandler implements CommandExecutor, TabCompleter {
                         new ComponentBuilder("§aProtect this structure").create()));
                     player.spigot().sendMessage(protectLink);
                 } else {
-                    player.sendMessage("  §e" + s.structureType + status);
+                    player.sendMessage("  §e" + s.structureType + status + distStr);
                 }
             }
         } else {
-            player.sendMessage("§7No structure origins in this chunk.");
+            player.sendMessage("§7No structures detected in this area.");
         }
         
         // Check nearest in database
@@ -435,7 +446,7 @@ public class CommandHandler implements CommandExecutor, TabCompleter {
         
         if (nearest != null) {
             double dist = Math.sqrt(Math.pow(nearest.x - loc.getX(), 2) + Math.pow(nearest.z - loc.getZ(), 2));
-            player.sendMessage("§7Nearest protected: §e" + nearest.type + " §7(" + String.format("%.0f", dist) + " blocks)");
+            player.sendMessage("§7Nearest in database: §e" + nearest.type + " §7(" + String.format("%.0f", dist) + " blocks)");
             if (nearest.hasRegion) {
                 player.sendMessage("§7Region: §f" + nearest.regionId);
             }

@@ -2163,6 +2163,152 @@ public class StructureFinder {
     }
     
     /**
+     * Get all structures spanning a chunk (not just origins).
+     * Used by /sg info to show what structure you're standing in.
+     * Returns structures that have any presence in this chunk, regardless of origin.
+     * 
+     * @param world The world
+     * @param chunkX The chunk X coordinate
+     * @param chunkZ The chunk Z coordinate
+     * @return List of structures present in this chunk (may not be origin)
+     */
+    public List<StructureResult> getStructuresSpanningChunk(World world, int chunkX, int chunkZ) {
+        if (!reflectionCacheInitialized) {
+            if (!initForChunkListener(world)) {
+                return Collections.emptyList();
+            }
+        }
+        
+        List<StructureResult> results = new ArrayList<>();
+        
+        try {
+            if (useFabricPath) {
+                results = getStructuresSpanningChunkFabric(chunkX, chunkZ);
+            } else {
+                results = getStructuresSpanningChunkMojang(chunkX, chunkZ);
+                
+                // Fallback to chunk path if Mojang returns nothing
+                if (results.isEmpty() && getChunkMethod != null && chunkGetStructureStartsMethod != null) {
+                    results = getStructuresSpanningChunkFabric(chunkX, chunkZ);
+                }
+            }
+        } catch (Exception e) {
+            plugin.getConfigManager().debug("getStructuresSpanningChunk error: " + e.getMessage());
+        }
+        
+        return results;
+    }
+    
+    /**
+     * Mojang path: Get ALL structures at a position (not filtered by origin).
+     */
+    private List<StructureResult> getStructuresSpanningChunkMojang(int chunkX, int chunkZ) {
+        List<StructureResult> results = new ArrayList<>();
+        
+        try {
+            int blockX = chunkX * 16 + 8;
+            int blockZ = chunkZ * 16 + 8;
+            Object blockPos = blockPosConstructor.newInstance(blockX, 64, blockZ);
+            
+            Object structureMapObj = getAllStructuresAtMethod.invoke(cachedStructureManager, blockPos);
+            
+            if (structureMapObj != null && structureMapObj instanceof Map) {
+                Map<?, ?> structureMap = (Map<?, ?>) structureMapObj;
+                
+                for (Map.Entry<?, ?> entry : structureMap.entrySet()) {
+                    Object structure = entry.getKey();
+                    Object chunkReferences = entry.getValue();
+                    
+                    String structureName = getStructureNameCached(structure);
+                    if (structureName == null) continue;
+                    
+                    // Get origin for display purposes, but don't filter
+                    int originChunkX = chunkX;
+                    int originChunkZ = chunkZ;
+                    
+                    try {
+                        if (chunkReferences != null && cachedIteratorMethod != null) {
+                            Object iterator = cachedIteratorMethod.invoke(chunkReferences);
+                            if ((boolean) cachedHasNextMethod.invoke(iterator)) {
+                                long packedPos = (long) cachedNextLongMethod.invoke(iterator);
+                                originChunkX = (int) packedPos;
+                                originChunkZ = (int) (packedPos >> 32);
+                            }
+                        }
+                    } catch (Exception e) {
+                        // Keep query chunk as fallback
+                    }
+                    
+                    // Return with actual origin coordinates
+                    int originX = originChunkX * 16 + 8;
+                    int originZ = originChunkZ * 16 + 8;
+                    results.add(new StructureResult(structureName, originX, originZ, originChunkX, originChunkZ));
+                }
+            }
+        } catch (Exception e) {
+            plugin.getConfigManager().debug("getStructuresSpanningChunkMojang error: " + e.getMessage());
+        }
+        
+        return results;
+    }
+    
+    /**
+     * Chunk/Fabric path: Get ALL structures in chunk (not filtered by origin).
+     */
+    private List<StructureResult> getStructuresSpanningChunkFabric(int chunkX, int chunkZ) {
+        List<StructureResult> results = new ArrayList<>();
+        
+        try {
+            Object chunk = getChunkMethod.invoke(cachedServerLevel, chunkX, chunkZ);
+            if (chunk == null) return results;
+            
+            Object structureStartsObj = chunkGetStructureStartsMethod.invoke(chunk);
+            if (!(structureStartsObj instanceof Map)) return results;
+            
+            Map<?, ?> structureStarts = (Map<?, ?>) structureStartsObj;
+            
+            for (Map.Entry<?, ?> entry : structureStarts.entrySet()) {
+                Object structure = entry.getKey();
+                Object structureStart = entry.getValue();
+                if (structureStart == null) continue;
+                
+                String structureName = getStructureNameCached(structure);
+                if (structureName == null) continue;
+                
+                // Get origin for display
+                int originChunkX = chunkX;
+                int originChunkZ = chunkZ;
+                
+                try {
+                    Method getChunkPosMethod = findMethodByNames(structureStart.getClass(),
+                        "getChunkPos", "method_14963", "getPos");
+                    if (getChunkPosMethod != null) {
+                        Object chunkPos = getChunkPosMethod.invoke(structureStart);
+                        if (chunkPos != null) {
+                            Method getXMethod = findMethodByNames(chunkPos.getClass(), "x", "method_8324", "getX");
+                            Method getZMethod = findMethodByNames(chunkPos.getClass(), "z", "method_8326", "getZ");
+                            if (getXMethod != null && getZMethod != null) {
+                                originChunkX = (int) getXMethod.invoke(chunkPos);
+                                originChunkZ = (int) getZMethod.invoke(chunkPos);
+                            }
+                        }
+                    }
+                } catch (Exception e) {
+                    // Keep query chunk
+                }
+                
+                int originX = originChunkX * 16 + 8;
+                int originZ = originChunkZ * 16 + 8;
+                results.add(new StructureResult(structureName, originX, originZ, originChunkX, originChunkZ));
+            }
+        } catch (Exception e) {
+            plugin.getConfigManager().debug("getStructuresSpanningChunkFabric error: " + e.getMessage());
+        }
+        
+        return results;
+    }
+
+    /**
      * Get structures in chunk asynchronously with CompletableFuture.
      * Preferred for non-blocking operations.
      * 

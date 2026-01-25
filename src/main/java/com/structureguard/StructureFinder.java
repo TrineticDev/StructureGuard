@@ -1147,6 +1147,118 @@ public class StructureFinder {
     }
     
     /**
+     * Get detection path info for diagnostics.
+     */
+    public String getDetectionPathInfo() {
+        StringBuilder sb = new StringBuilder();
+        sb.append(useFabricPath ? "Chunk-based (Fabric)" : "Mojang (StructureManager)");
+        if (getAllStructuresAtMethod != null) {
+            sb.append(" | getAllStructuresAt: ").append(getAllStructuresAtMethod.getName());
+        }
+        if (chunkGetStructureStartsMethod != null) {
+            sb.append(" | chunkStructureStarts: ").append(chunkGetStructureStartsMethod.getName());
+        }
+        if (cachedStructureRegistry != null) {
+            sb.append(" | Registry: OK");
+        } else {
+            sb.append(" | Registry: null");
+        }
+        return sb.toString();
+    }
+    
+    /**
+     * Probe a specific chunk for structures with verbose output.
+     * Used for debugging structure detection issues.
+     */
+    public List<String> probeChunkVerbose(World world, int chunkX, int chunkZ) {
+        List<String> output = new ArrayList<>();
+        
+        output.add("§6Probing chunk " + chunkX + "," + chunkZ + " in " + world.getName());
+        output.add("§7Detection path: " + getDetectionPathInfo());
+        
+        try {
+            // Initialize if needed
+            if (!reflectionCacheInitialized) {
+                output.add("§eInitializing reflection cache...");
+                initReflectionCache(world);
+            }
+            
+            // Try Mojang path
+            if (getAllStructuresAtMethod != null && cachedStructureManager != null) {
+                output.add("§7Trying Mojang path...");
+                try {
+                    int blockX = chunkX * 16 + 8;
+                    int blockZ = chunkZ * 16 + 8;
+                    Object blockPos = blockPosConstructor.newInstance(blockX, 64, blockZ);
+                    
+                    Object structureMapObj = getAllStructuresAtMethod.invoke(cachedStructureManager, blockPos);
+                    
+                    if (structureMapObj == null) {
+                        output.add("§c  getAllStructuresAt returned null");
+                    } else if (structureMapObj instanceof Map) {
+                        Map<?, ?> structureMap = (Map<?, ?>) structureMapObj;
+                        output.add("§a  Found " + structureMap.size() + " structure entries");
+                        
+                        for (Map.Entry<?, ?> entry : structureMap.entrySet()) {
+                            Object structure = entry.getKey();
+                            Object chunkRefs = entry.getValue();
+                            String name = getStructureNameCached(structure);
+                            String refsInfo = chunkRefs != null ? chunkRefs.getClass().getSimpleName() : "null";
+                            output.add("§7    " + name + " §8(" + refsInfo + ")");
+                        }
+                    } else {
+                        output.add("§c  Unexpected return type: " + structureMapObj.getClass().getName());
+                    }
+                } catch (Exception e) {
+                    output.add("§c  Mojang path error: " + e.getMessage());
+                }
+            } else {
+                output.add("§7Mojang path not available (getAllStructuresAt=" + 
+                    (getAllStructuresAtMethod != null) + ", structureManager=" + (cachedStructureManager != null) + ")");
+            }
+            
+            // Try Chunk path
+            if (getChunkMethod != null && chunkGetStructureStartsMethod != null) {
+                output.add("§7Trying Chunk path...");
+                try {
+                    Object chunk = getChunkMethod.invoke(cachedServerLevel, chunkX, chunkZ);
+                    if (chunk == null) {
+                        output.add("§c  getChunk returned null");
+                    } else {
+                        Object structureStarts = chunkGetStructureStartsMethod.invoke(chunk);
+                        if (structureStarts == null) {
+                            output.add("§c  getStructureStarts returned null");
+                        } else if (structureStarts instanceof Map) {
+                            Map<?, ?> startsMap = (Map<?, ?>) structureStarts;
+                            output.add("§a  Found " + startsMap.size() + " structure starts");
+                            
+                            for (Map.Entry<?, ?> entry : startsMap.entrySet()) {
+                                Object structure = entry.getKey();
+                                Object start = entry.getValue();
+                                String name = getStructureNameCached(structure);
+                                String startInfo = start != null ? start.getClass().getSimpleName() : "null";
+                                output.add("§7    " + name + " §8(" + startInfo + ")");
+                            }
+                        } else {
+                            output.add("§c  Unexpected type: " + structureStarts.getClass().getName());
+                        }
+                    }
+                } catch (Exception e) {
+                    output.add("§c  Chunk path error: " + e.getMessage());
+                }
+            } else {
+                output.add("§7Chunk path not available (getChunk=" + 
+                    (getChunkMethod != null) + ", chunkStructureStarts=" + (chunkGetStructureStartsMethod != null) + ")");
+            }
+            
+        } catch (Exception e) {
+            output.add("§cProbe error: " + e.getMessage());
+        }
+        
+        return output;
+    }
+    
+    /**
      * Get all registered structure types from the server.
      * Works with vanilla and modded structures (Pixelmon, Terralith, etc.)
      */

@@ -91,6 +91,8 @@ public class CommandHandler implements CommandExecutor, TabCompleter {
                 return cmdReload(sender, args);
             case "debug":
                 return cmdDebug(sender, args);
+            case "probe":
+                return cmdProbe(sender, args);
                 
             default:
                 sender.sendMessage("§cUnknown command. Use /sg for help.");
@@ -1143,12 +1145,18 @@ public class CommandHandler implements CommandExecutor, TabCompleter {
             sender.sendMessage("§7On-Demand: §cInactive");
         }
         
+        // Detection path info
+        sender.sendMessage("§7Detection: §f" + plugin.getStructureFinder().getDetectionPathInfo());
+        
         // Debug mode
         sender.sendMessage("§7Debug: " + (plugin.getConfigManager().isDebugMode() ? "§aON" : "§7off"));
         
         // Structure registry test
         List<String> types = plugin.getStructureFinder().getAllStructureTypes();
         sender.sendMessage("§7Registry: §f" + types.size() + "§7 structure types");
+        
+        // Tip for probe command
+        sender.sendMessage("§7Use §e/sg probe§7 to diagnose structure detection issues");
         
         return true;
     }
@@ -1184,6 +1192,43 @@ public class CommandHandler implements CommandExecutor, TabCompleter {
         sender.sendMessage("§7Debug mode: " + (!current ? "§aON" : "§cOFF"));
         if (!current) {
             sender.sendMessage("§7Check console for detailed structure detection logs.");
+        }
+        
+        return true;
+    }
+    
+    /**
+     * Probe chunk for structures - diagnostic command.
+     */
+    private boolean cmdProbe(CommandSender sender, String[] args) {
+        if (!sender.hasPermission("structureguard.admin")) {
+            sender.sendMessage("§cNo permission.");
+            return true;
+        }
+        
+        if (!(sender instanceof Player)) {
+            sender.sendMessage("§cPlayers only.");
+            return true;
+        }
+        
+        Player player = (Player) sender;
+        int chunkX = player.getLocation().getBlockX() >> 4;
+        int chunkZ = player.getLocation().getBlockZ() >> 4;
+        
+        // Allow specifying chunk coords
+        if (args.length >= 3) {
+            try {
+                chunkX = Integer.parseInt(args[1]);
+                chunkZ = Integer.parseInt(args[2]);
+            } catch (NumberFormatException e) {
+                sender.sendMessage("§cUsage: /sg probe [chunkX] [chunkZ]");
+                return true;
+            }
+        }
+        
+        List<String> output = plugin.getStructureFinder().probeChunkVerbose(player.getWorld(), chunkX, chunkZ);
+        for (String line : output) {
+            sender.sendMessage(line);
         }
         
         return true;

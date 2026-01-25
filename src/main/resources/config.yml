@@ -40,22 +40,23 @@ default-flags:
 # Use /sg protect <pattern> in-game to add rules.
 # 
 # Format:
-#   pattern:             # Pattern with : replaced by _ in key
-#     enabled: true      # Whether this rule is active
-#     radius: 48         # Protection radius from structure center
-#     y-min: -64         # Minimum Y level
-#     y-max: 320         # Maximum Y level
-#     priority: 10       # Higher = takes precedence
-#     flags:             # WorldGuard flags for this type
+#   "namespace:structure":   # Use quotes around patterns with colons
+#     enabled: true          # Whether this rule is active
+#     radius: 48             # Protection radius from structure center
+#     y-min: -64             # Minimum Y level
+#     y-max: 320             # Maximum Y level
+#     priority: 10           # Higher = takes precedence
+#     flags:                 # WorldGuard flags for this type
 #       block-break: deny
 #
-# Wildcards:
-#   *                    # All structures
-#   minecraft_*          # All vanilla structures
-#   cobblemon_*_gym      # All Cobblemon gyms
+# Wildcards (* matches any text):
+#   "*":                     # All structures
+#   "minecraft:*":           # All vanilla structures  
+#   "minecraft:village*":    # All villages (village_plains, village_desert, etc.)
+#   "cobblemon:*_gym":       # All Cobblemon gyms
 #
 # Example:
-#   minecraft_village:
+#   "minecraft:village*":
 #     enabled: true
 #     radius: 64
 #     y-min: -64

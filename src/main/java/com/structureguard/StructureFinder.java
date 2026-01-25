@@ -1297,6 +1297,22 @@ public class StructureFinder {
                         } else {
                             output.add("§c  Unexpected type: " + structureStarts.getClass().getName());
                         }
+                        
+                        // If both paths found nothing, dump ALL map methods on this chunk
+                        output.add("§6All Map methods on this chunk:");
+                        for (Method m : chunk.getClass().getMethods()) {
+                            if (m.getParameterCount() == 0 && Map.class.isAssignableFrom(m.getReturnType())) {
+                                try {
+                                    Object result = m.invoke(chunk);
+                                    int size = (result != null) ? ((Map<?,?>)result).size() : -1;
+                                    String generic = m.getGenericReturnType().getTypeName();
+                                    String color = size > 0 ? "§a" : "§7";
+                                    output.add(color + "  " + m.getName() + "() [size=" + size + "] §8-> " + generic);
+                                } catch (Exception e) {
+                                    // Skip erroring methods
+                                }
+                            }
+                        }
                     }
                 } catch (Exception e) {
                     output.add("§c  Chunk path error: " + e.getMessage());

@@ -59,6 +59,10 @@ public class StructureGuardPlugin extends JavaPlugin {
     
     @Override
     public void onDisable() {
+        // Flush pending chunk DB writes
+        if (chunkLoadListener != null) {
+            chunkLoadListener.shutdown();
+        }
         if (database != null) {
             database.close();
         }

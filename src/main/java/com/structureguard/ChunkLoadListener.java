@@ -8,6 +8,7 @@ import org.bukkit.event.Listener;
 import org.bukkit.event.world.ChunkLoadEvent;
 
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -16,15 +17,19 @@ import java.util.concurrent.atomic.AtomicLong;
  * Listens for chunk loads and automatically protects structures
  * that match the configured protection rules.
  * 
- * This is the core of the on-demand protection system - no pre-scanning needed.
- * Structures are protected as their origin chunks are loaded/generated.
+ * PERFORMANCE OPTIMIZED:
+ * - In-memory cache of scanned chunks (loaded from DB on startup)
+ * - No synchronous DB queries on main thread
+ * - Rate-limited concurrent tasks (max 10)
  */
 public class ChunkLoadListener implements Listener {
     
     private final StructureGuardPlugin plugin;
     
-    // Track processed chunks to avoid duplicate processing on reload
-    private final Set<Long> processedChunks = Collections.synchronizedSet(new HashSet<>());
+    // In-memory cache of scanned chunks per world - loaded from DB on startup
+    // Key: worldName, Value: Set of packed chunk coordinates
+    private final Map<String, Set<Long>> scannedChunksCache = new ConcurrentHashMap<>();
+    private volatile boolean cacheLoaded = false;
     
     // Rate limiting: max concurrent async tasks to prevent thread explosion
     private static final int MAX_CONCURRENT_TASKS = 10;
@@ -32,6 +37,10 @@ public class ChunkLoadListener implements Listener {
     
     // Queue for chunks waiting to be processed (when at max concurrent)
     private final ConcurrentLinkedQueue<ChunkTask> pendingChunks = new ConcurrentLinkedQueue<>();
+    
+    // Pending DB writes - batched for efficiency
+    private final ConcurrentLinkedQueue<ChunkWriteTask> pendingDbWrites = new ConcurrentLinkedQueue<>();
+    private static final int DB_BATCH_SIZE = 50;
     
     // Statistics
     private final AtomicLong processedChunkCount = new AtomicLong(0);
@@ -53,8 +62,39 @@ public class ChunkLoadListener implements Listener {
         }
     }
     
+    private static class ChunkWriteTask {
+        final String worldName;
+        final int chunkX, chunkZ;
+        ChunkWriteTask(String worldName, int chunkX, int chunkZ) {
+            this.worldName = worldName;
+            this.chunkX = chunkX;
+            this.chunkZ = chunkZ;
+        }
+    }
+    
     public ChunkLoadListener(StructureGuardPlugin plugin) {
         this.plugin = plugin;
+        // Load scanned chunks cache on startup
+        loadCacheSync();
+    }
+    
+    /**
+     * Load scanned chunks from database into memory cache.
+     * Done synchronously during plugin enable to ensure cache is ready.
+     */
+    private void loadCacheSync() {
+        for (World world : plugin.getServer().getWorlds()) {
+            String worldName = world.getName();
+            Set<Long> chunks = plugin.getDatabase().getScannedChunks(worldName);
+            Set<Long> cacheSet = ConcurrentHashMap.newKeySet();
+            cacheSet.addAll(chunks);
+            scannedChunksCache.put(worldName, cacheSet);
+            plugin.getLogger().info("Loaded " + chunks.size() + " scanned chunks for " + worldName);
+            
+            // Also initialize the StructureFinder for this world
+            plugin.getStructureFinder().initForChunkListener(world);
+        }
+        cacheLoaded = true;
     }
     
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
@@ -71,27 +111,21 @@ public class ChunkLoadListener implements Listener {
         
         Chunk chunk = event.getChunk();
         World world = chunk.getWorld();
+        String worldName = world.getName();
         
         // Skip disabled worlds (e.g., resource worlds)
-        if (plugin.getConfigManager().isWorldDisabled(world.getName())) {
+        if (plugin.getConfigManager().isWorldDisabled(worldName)) {
             return;
         }
         
-        // Skip if already processed this session
+        // Fast in-memory check - NO database query on main thread!
         long chunkKey = packChunkCoords(chunk.getX(), chunk.getZ());
-        if (processedChunks.contains(chunkKey)) {
-            return;
-        }
-        
-        // Also check database for chunks scanned in previous sessions
-        if (plugin.getDatabase().isChunkScanned(world.getName(), chunk.getX(), chunk.getZ())) {
-            processedChunks.add(chunkKey); // Add to memory cache too
+        if (isChunkScannedCached(worldName, chunkKey)) {
             return;
         }
         
         final int chunkX = chunk.getX();
         final int chunkZ = chunk.getZ();
-        final String worldName = world.getName();
         
         ChunkTask task = new ChunkTask(world, chunkX, chunkZ, worldName, chunkKey);
         
@@ -105,6 +139,61 @@ public class ChunkLoadListener implements Listener {
     }
     
     /**
+     * Check if chunk is scanned using in-memory cache (O(1) lookup, no DB query).
+     */
+    private boolean isChunkScannedCached(String worldName, long chunkKey) {
+        Set<Long> worldCache = scannedChunksCache.get(worldName);
+        if (worldCache == null) {
+            // World not in cache yet - create empty set
+            worldCache = ConcurrentHashMap.newKeySet();
+            scannedChunksCache.put(worldName, worldCache);
+            return false;
+        }
+        return worldCache.contains(chunkKey);
+    }
+    
+    /**
+     * Mark chunk as scanned in memory cache and queue for DB write.
+     */
+    private void markChunkScannedCached(String worldName, int chunkX, int chunkZ, long chunkKey) {
+        // Add to memory cache immediately
+        Set<Long> worldCache = scannedChunksCache.computeIfAbsent(worldName, k -> ConcurrentHashMap.newKeySet());
+        worldCache.add(chunkKey);
+        
+        // Queue for batched DB write
+        pendingDbWrites.offer(new ChunkWriteTask(worldName, chunkX, chunkZ));
+        
+        // Flush to DB if batch size reached
+        if (pendingDbWrites.size() >= DB_BATCH_SIZE) {
+            flushDbWrites();
+        }
+    }
+    
+    /**
+     * Flush pending DB writes asynchronously.
+     */
+    private void flushDbWrites() {
+        // Group by world
+        Map<String, List<int[]>> byWorld = new HashMap<>();
+        ChunkWriteTask task;
+        int count = 0;
+        while ((task = pendingDbWrites.poll()) != null && count < DB_BATCH_SIZE * 2) {
+            byWorld.computeIfAbsent(task.worldName, k -> new ArrayList<>())
+                   .add(new int[]{task.chunkX, task.chunkZ});
+            count++;
+        }
+        
+        if (!byWorld.isEmpty()) {
+            // Write to DB asynchronously
+            plugin.getServer().getScheduler().runTaskAsynchronously(plugin, () -> {
+                for (Map.Entry<String, List<int[]>> entry : byWorld.entrySet()) {
+                    plugin.getDatabase().markChunksScanned(entry.getKey(), entry.getValue());
+                }
+            });
+        }
+    }
+    
+    /**
      * Start an async task using Bukkit's scheduler (maintains proper context for NMS).
      */
     private void startAsyncTask(ChunkTask task) {
@@ -113,12 +202,10 @@ public class ChunkLoadListener implements Listener {
         plugin.getServer().getScheduler().runTaskAsynchronously(plugin, () -> {
             try {
                 processChunkStructures(task.world, task.chunkX, task.chunkZ);
-                processedChunks.add(task.chunkKey);
                 processedChunkCount.incrementAndGet();
                 
-                // Mark as scanned in database for persistence across restarts
-                plugin.getDatabase().markChunksScanned(task.worldName, 
-                    java.util.Collections.singletonList(new int[]{task.chunkX, task.chunkZ}));
+                // Mark as scanned in memory cache + queue for batched DB write
+                markChunkScannedCached(task.worldName, task.chunkX, task.chunkZ, task.chunkKey);
             } catch (Exception e) {
                 plugin.getConfigManager().debug("Error processing chunk " + task.chunkX + "," + task.chunkZ + ": " + e.getMessage());
             } finally {
@@ -150,6 +237,9 @@ public class ChunkLoadListener implements Listener {
             List<StructureFinder.StructureResult> structures = 
                 plugin.getStructureFinder().getStructuresInChunk(world, chunkX, chunkZ);
             
+            plugin.getConfigManager().debug("processChunkStructures: chunk " + chunkX + "," + chunkZ + 
+                " found " + structures.size() + " structures");
+            
             if (structures.isEmpty()) {
                 return;
             }
@@ -158,19 +248,27 @@ public class ChunkLoadListener implements Listener {
             int protectable = 0;
             
             for (StructureFinder.StructureResult structure : structures) {
+                plugin.getConfigManager().debug("  Checking structure: " + structure.structureType);
+                
                 // Check if this structure type should be protected
                 ConfigManager.ProtectionRule rule = plugin.getConfigManager().getProtectionRule(structure.structureType);
                 if (rule == null || !rule.enabled) {
+                    plugin.getConfigManager().debug("    No matching rule or not enabled (rule=" + 
+                        (rule != null ? rule.pattern : "null") + ")");
                     continue;
                 }
+                
+                plugin.getConfigManager().debug("    Found matching rule: " + rule.pattern);
                 
                 // Check if already protected in database
                 if (plugin.getDatabase().isStructureProtected(world.getName(), structure.structureType, 
                         structure.x, structure.z)) {
+                    plugin.getConfigManager().debug("    Already protected in database");
                     continue;
                 }
                 
                 protectable++;
+                plugin.getConfigManager().debug("    Will protect this structure!");
                 
                 // Create protection on main thread (WorldGuard requires it)
                 final StructureFinder.StructureResult finalStructure = structure;
@@ -268,21 +366,54 @@ public class ChunkLoadListener implements Listener {
     }
     
     /**
-     * Clear processed chunks cache (used on reload).
+     * Get cached chunk count for a world.
+     */
+    public int getCachedChunkCount(String worldName) {
+        Set<Long> cache = scannedChunksCache.get(worldName);
+        return cache != null ? cache.size() : 0;
+    }
+    
+    /**
+     * Clear all caches (used on reload).
      */
     public void clearCache() {
-        processedChunks.clear();
-        // Don't reset counters - they track session totals
+        // Flush any pending DB writes first
+        flushDbWrites();
+        // Clear all world caches
+        scannedChunksCache.clear();
+        // Reload cache from DB
+        loadCacheSync();
+        plugin.getConfigManager().debug("Cleared and reloaded all chunk caches");
     }
     
     /**
      * Clear cache for a specific world (used when resetting a world).
      */
     public void clearWorldCache(String worldName) {
-        // We can't easily filter the packed coords by world, so just clear all
-        // This is fine since database check will prevent re-processing
-        processedChunks.clear();
+        Set<Long> cache = scannedChunksCache.get(worldName);
+        if (cache != null) {
+            cache.clear();
+        }
+        // Flush any pending DB writes
+        flushDbWrites();
         plugin.getConfigManager().debug("Cleared chunk cache for world reset: " + worldName);
+    }
+    
+    /**
+     * Flush remaining DB writes on shutdown.
+     */
+    public void shutdown() {
+        // Flush all pending writes grouped by world
+        Map<String, List<int[]>> byWorld = new HashMap<>();
+        ChunkWriteTask task;
+        while ((task = pendingDbWrites.poll()) != null) {
+            byWorld.computeIfAbsent(task.worldName, k -> new ArrayList<>())
+                   .add(new int[]{task.chunkX, task.chunkZ});
+        }
+        
+        for (Map.Entry<String, List<int[]>> entry : byWorld.entrySet()) {
+            plugin.getDatabase().markChunksScanned(entry.getKey(), entry.getValue());
+        }
     }
     
     /**

@@ -197,24 +197,30 @@ public class ConfigManager {
     }
     
     /**
-     * Convert a pattern (minecraft:end_city) to a config key (minecraft--end_city)
-     * Uses -- as separator because YAML interprets . as nested path and : is invalid.
+     * Convert a pattern to a config key.
+     * Now uses the pattern directly - YAML will auto-quote keys containing colons.
      */
     private String patternToConfigKey(String pattern) {
-        return pattern.replace(":", "--");
+        // Use pattern directly - Bukkit/SnakeYAML will quote it automatically
+        return pattern;
     }
     
     /**
-     * Convert a config key (minecraft--end_city) back to a pattern (minecraft:end_city)
+     * Convert a config key back to a pattern.
+     * Handles backwards compatibility with old formats.
      */
     private String configKeyToPattern(String configKey) {
-        // New format: -- separator
+        // New format: key already contains colon (YAML quoted it)
+        if (configKey.contains(":")) {
+            return configKey;
+        }
+        // Old format: -- separator (convert to colon)
         if (configKey.contains("--")) {
             return configKey.replace("--", ":");
         }
-        // Old format: _ separator (backwards compatibility, but only first underscore)
+        // Legacy format: first _ was namespace separator
         int underscoreIndex = configKey.indexOf('_');
-        if (underscoreIndex > 0 && !configKey.contains(":")) {
+        if (underscoreIndex > 0) {
             return configKey.substring(0, underscoreIndex) + ":" + configKey.substring(underscoreIndex + 1);
         }
         return configKey;

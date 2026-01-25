@@ -59,6 +59,11 @@ public class StructureGuardPlugin extends JavaPlugin {
     
     @Override
     public void onDisable() {
+        // Shutdown chunk processor first (flushes pending data)
+        if (chunkLoadListener != null) {
+            chunkLoadListener.shutdown();
+        }
+        
         if (database != null) {
             database.close();
         }

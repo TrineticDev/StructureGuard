@@ -8,6 +8,7 @@ import org.bukkit.event.Listener;
 import org.bukkit.event.world.ChunkLoadEvent;
 
 import java.util.*;
+import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -16,6 +17,9 @@ import java.util.concurrent.atomic.AtomicLong;
  * 
  * This is the core of the on-demand protection system - no pre-scanning needed.
  * Structures are protected as their origin chunks are loaded/generated.
+ * 
+ * Uses a bounded thread pool and chunk queue to prevent thread explosion
+ * when many chunks load simultaneously (e.g., mass player login).
  */
 public class ChunkLoadListener implements Listener {
     
@@ -28,8 +32,161 @@ public class ChunkLoadListener implements Listener {
     private final AtomicLong processedChunkCount = new AtomicLong(0);
     private final AtomicLong protectedStructureCount = new AtomicLong(0);
     
+    // Bounded executor to prevent thread explosion (max 2 worker threads)
+    private static final int MAX_WORKER_THREADS = 2;
+    private final ExecutorService chunkExecutor;
+    
+    // Queue for pending chunks - bounded to prevent memory issues
+    private static final int MAX_QUEUE_SIZE = 500;
+    private final BlockingQueue<ChunkTask> chunkQueue;
+    
+    // Batch buffer for marking chunks as scanned (reduces DB writes)
+    // Maps worldName -> list of chunk coords
+    private final Map<String, List<int[]>> scannedChunkBuffers = new ConcurrentHashMap<>();
+    private static final int BATCH_FLUSH_SIZE = 50;
+    private volatile long lastFlushTime = System.currentTimeMillis();
+    private static final long BATCH_FLUSH_INTERVAL_MS = 5000; // Flush every 5 seconds at minimum
+    
+    // Simple record to hold pending chunk info
+    private static class ChunkTask {
+        final World world;
+        final int chunkX;
+        final int chunkZ;
+        final String worldName;
+        final long chunkKey;
+        
+        ChunkTask(World world, int chunkX, int chunkZ, String worldName, long chunkKey) {
+            this.world = world;
+            this.chunkX = chunkX;
+            this.chunkZ = chunkZ;
+            this.worldName = worldName;
+            this.chunkKey = chunkKey;
+        }
+    }
+    
     public ChunkLoadListener(StructureGuardPlugin plugin) {
         this.plugin = plugin;
+        
+        // Use a bounded queue - if full, new chunks are dropped (they'll be processed next load)
+        this.chunkQueue = new LinkedBlockingQueue<>(MAX_QUEUE_SIZE);
+        
+        // Create a fixed thread pool with bounded size - CRITICAL to prevent thread explosion
+        this.chunkExecutor = new ThreadPoolExecutor(
+            1,                          // core pool size
+            MAX_WORKER_THREADS,         // max pool size
+            60L, TimeUnit.SECONDS,      // idle thread timeout
+            new LinkedBlockingQueue<>(MAX_QUEUE_SIZE), // bounded work queue
+            r -> {
+                Thread t = new Thread(r, "StructureGuard-Worker");
+                t.setDaemon(true);
+                return t;
+            },
+            new ThreadPoolExecutor.DiscardPolicy() // Drop tasks if overloaded (chunk will be processed next time)
+        );
+        
+        // Start the worker that processes the queue
+        startQueueProcessor();
+        
+        // Start the periodic batch flush task
+        startBatchFlushTask();
+    }
+    
+    /**
+     * Start a single worker that processes chunks from the queue.
+     * This ensures controlled, sequential processing.
+     */
+    private void startQueueProcessor() {
+        chunkExecutor.submit(() -> {
+            while (!Thread.currentThread().isInterrupted()) {
+                try {
+                    // Take a chunk from the queue (blocks if empty)
+                    ChunkTask task = chunkQueue.poll(1, TimeUnit.SECONDS);
+                    if (task == null) continue;
+                    
+                    processChunkTask(task);
+                    
+                    // Small delay between chunks to prevent CPU spikes
+                    Thread.sleep(10);
+                    
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
+                } catch (Exception e) {
+                    plugin.getConfigManager().debug("Queue processor error: " + e.getMessage());
+                }
+            }
+        });
+    }
+    
+    /**
+     * Start a periodic task to flush the scanned chunk buffer to the database.
+     */
+    private void startBatchFlushTask() {
+        plugin.getServer().getScheduler().runTaskTimerAsynchronously(plugin, () -> {
+            flushAllBuffers(false);
+        }, 100L, 100L); // Every 5 seconds (100 ticks)
+    }
+    
+    /**
+     * Flush all world buffers to the database.
+     */
+    private void flushAllBuffers(boolean force) {
+        long now = System.currentTimeMillis();
+        if (!force && (now - lastFlushTime) < BATCH_FLUSH_INTERVAL_MS) {
+            return;
+        }
+        
+        lastFlushTime = now;
+        for (String worldName : scannedChunkBuffers.keySet()) {
+            flushWorldBuffer(worldName);
+        }
+    }
+    
+    /**
+     * Process a single chunk task.
+     */
+    private void processChunkTask(ChunkTask task) {
+        try {
+            // Check database for chunks scanned in previous sessions (deferred from event handler)
+            if (plugin.getDatabase().isChunkScanned(task.worldName, task.chunkX, task.chunkZ)) {
+                processedChunks.add(task.chunkKey); // Add to memory cache
+                return;
+            }
+            
+            processChunkStructures(task.world, task.chunkX, task.chunkZ);
+            processedChunks.add(task.chunkKey);
+            processedChunkCount.incrementAndGet();
+            
+            // Add to buffer instead of immediate DB write (per-world)
+            List<int[]> buffer = scannedChunkBuffers.computeIfAbsent(task.worldName, 
+                k -> Collections.synchronizedList(new ArrayList<>()));
+            buffer.add(new int[]{task.chunkX, task.chunkZ});
+            
+            // Flush if buffer is full for this world
+            if (buffer.size() >= BATCH_FLUSH_SIZE) {
+                flushWorldBuffer(task.worldName);
+            }
+        } catch (Exception e) {
+            plugin.getConfigManager().debug("Error processing chunk " + task.chunkX + "," + task.chunkZ + ": " + e.getMessage());
+        }
+    }
+    
+    /**
+     * Flush the scanned chunk buffer for a specific world to the database.
+     */
+    private void flushWorldBuffer(String worldName) {
+        List<int[]> buffer = scannedChunkBuffers.get(worldName);
+        if (buffer == null || buffer.isEmpty()) return;
+        
+        List<int[]> toFlush;
+        synchronized (buffer) {
+            toFlush = new ArrayList<>(buffer);
+            buffer.clear();
+        }
+        
+        if (!toFlush.isEmpty()) {
+            plugin.getDatabase().markChunksScanned(worldName, toFlush);
+        }
     }
     
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
@@ -58,30 +215,20 @@ public class ChunkLoadListener implements Listener {
             return;
         }
         
-        // Also check database for chunks scanned in previous sessions
-        if (plugin.getDatabase().isChunkScanned(world.getName(), chunk.getX(), chunk.getZ())) {
-            processedChunks.add(chunkKey); // Add to memory cache too
-            return;
-        }
+        // Fast path: check in-memory cache for scanned chunks
+        // Don't hit the database in the event handler - defer to the queue processor
         
-        // Process asynchronously to avoid blocking chunk load
+        // Queue the chunk for async processing (non-blocking)
         final int chunkX = chunk.getX();
         final int chunkZ = chunk.getZ();
         final String worldName = world.getName();
         
-        plugin.getServer().getScheduler().runTaskAsynchronously(plugin, () -> {
-            try {
-                processChunkStructures(world, chunkX, chunkZ);
-                processedChunks.add(chunkKey);
-                processedChunkCount.incrementAndGet();
-                
-                // Mark as scanned in database for persistence across restarts
-                plugin.getDatabase().markChunksScanned(worldName, 
-                    java.util.Collections.singletonList(new int[]{chunkX, chunkZ}));
-            } catch (Exception e) {
-                plugin.getConfigManager().debug("Error processing chunk " + chunkX + "," + chunkZ + ": " + e.getMessage());
-            }
-        });
+        ChunkTask task = new ChunkTask(world, chunkX, chunkZ, worldName, chunkKey);
+        
+        // Offer to queue - returns false if full (chunk will be picked up next time it loads)
+        if (!chunkQueue.offer(task)) {
+            plugin.getConfigManager().debug("Chunk queue full, skipping chunk " + chunkX + "," + chunkZ);
+        }
     }
     
     /**
@@ -220,5 +367,39 @@ public class ChunkLoadListener implements Listener {
     public void resetStats() {
         processedChunkCount.set(0);
         protectedStructureCount.set(0);
+    }
+    
+    /**
+     * Shutdown the chunk processor gracefully.
+     * Flushes pending data and stops worker threads.
+     */
+    public void shutdown() {
+        plugin.getConfigManager().debug("Shutting down chunk processor...");
+        
+        // Flush any pending scanned chunks to database
+        flushAllBuffers(true);
+        
+        // Shutdown the executor
+        chunkExecutor.shutdownNow();
+        try {
+            if (!chunkExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
+                plugin.getLogger().warning("Chunk processor did not terminate in time");
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        
+        // Clear the queue and buffers
+        chunkQueue.clear();
+        scannedChunkBuffers.clear();
+        
+        plugin.getConfigManager().debug("Chunk processor shutdown complete");
+    }
+    
+    /**
+     * Get the current queue size (for monitoring).
+     */
+    public int getQueueSize() {
+        return chunkQueue.size();
     }
 }

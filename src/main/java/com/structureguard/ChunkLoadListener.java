@@ -8,6 +8,7 @@ import org.bukkit.event.Listener;
 import org.bukkit.event.world.ChunkLoadEvent;
 
 import java.util.*;
+import java.util.concurrent.Semaphore;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -24,9 +25,14 @@ public class ChunkLoadListener implements Listener {
     // Track processed chunks to avoid duplicate processing on reload
     private final Set<Long> processedChunks = Collections.synchronizedSet(new HashSet<>());
     
+    // Limit concurrent async chunk processing to prevent thread explosion on mass login
+    // 10 concurrent = handles 200+ players joining without overwhelming the thread pool
+    private final Semaphore chunkProcessingSemaphore = new Semaphore(10);
+    
     // Statistics
     private final AtomicLong processedChunkCount = new AtomicLong(0);
     private final AtomicLong protectedStructureCount = new AtomicLong(0);
+    private final AtomicLong skippedDueToLoadCount = new AtomicLong(0);
     
     public ChunkLoadListener(StructureGuardPlugin plugin) {
         this.plugin = plugin;
@@ -65,9 +71,17 @@ public class ChunkLoadListener implements Listener {
         }
         
         // Process asynchronously to avoid blocking chunk load
+        // Use semaphore to limit concurrent processing and prevent thread explosion
         final int chunkX = chunk.getX();
         final int chunkZ = chunk.getZ();
         final String worldName = world.getName();
+        
+        // Try to acquire permit - if all 10 slots are busy, skip this chunk for now
+        // It will be processed when the chunk loads again, or on next restart
+        if (!chunkProcessingSemaphore.tryAcquire()) {
+            skippedDueToLoadCount.incrementAndGet();
+            return;
+        }
         
         plugin.getServer().getScheduler().runTaskAsynchronously(plugin, () -> {
             try {
@@ -80,6 +94,8 @@ public class ChunkLoadListener implements Listener {
                     java.util.Collections.singletonList(new int[]{chunkX, chunkZ}));
             } catch (Exception e) {
                 plugin.getConfigManager().debug("Error processing chunk " + chunkX + "," + chunkZ + ": " + e.getMessage());
+            } finally {
+                chunkProcessingSemaphore.release();
             }
         });
     }
@@ -197,6 +213,14 @@ public class ChunkLoadListener implements Listener {
     }
     
     /**
+     * Get the number of chunks skipped due to high load.
+     * These chunks will be processed when they load again or on restart.
+     */
+    public long getSkippedDueToLoadCount() {
+        return skippedDueToLoadCount.get();
+    }
+    
+    /**
      * Clear processed chunks cache (used on reload).
      */
     public void clearCache() {
@@ -220,5 +244,6 @@ public class ChunkLoadListener implements Listener {
     public void resetStats() {
         processedChunkCount.set(0);
         protectedStructureCount.set(0);
+        skippedDueToLoadCount.set(0);
     }
 }

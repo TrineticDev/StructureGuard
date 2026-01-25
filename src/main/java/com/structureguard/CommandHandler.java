@@ -1151,7 +1151,10 @@ public class CommandHandler implements CommandExecutor, TabCompleter {
         // Chunk listener
         ChunkLoadListener listener = plugin.getChunkLoadListener();
         if (listener != null) {
-            sender.sendMessage("§7On-Demand: §aActive §7(" + listener.getProcessedChunkCount() + " chunks processed)");
+            long processed = listener.getProcessedChunkCount();
+            long skipped = listener.getSkippedDueToLoadCount();
+            String skippedInfo = skipped > 0 ? ", §e" + skipped + " deferred§7" : "";
+            sender.sendMessage("§7On-Demand: §aActive §7(" + processed + " chunks" + skippedInfo + ")");
         } else {
             sender.sendMessage("§7On-Demand: §cInactive");
         }

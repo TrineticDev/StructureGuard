@@ -6,11 +6,13 @@ import java.util.*;
 /**
  * SQLite database for storing discovered structure locations.
  * Each structure gets one entry - no duplicates.
+ * Thread-safe: all database operations are synchronized.
  */
 public class StructureDatabase {
     
     private final StructureGuardPlugin plugin;
     private Connection connection;
+    private final Object dbLock = new Object(); // Lock for thread-safe database access
     
     public StructureDatabase(StructureGuardPlugin plugin) {
         this.plugin = plugin;
@@ -65,141 +67,176 @@ public class StructureDatabase {
     
     /**
      * Add a structure to the database. Ignores duplicates.
+     * Thread-safe.
      */
     public boolean addStructure(String world, String structureType, int x, int z) {
-        try {
-            PreparedStatement stmt = connection.prepareStatement(
+        synchronized (dbLock) {
+            try (PreparedStatement stmt = connection.prepareStatement(
                 "INSERT OR IGNORE INTO structures (world, structure_type, x, z) VALUES (?, ?, ?, ?)"
-            );
-            stmt.setString(1, world);
-            stmt.setString(2, structureType);
-            stmt.setInt(3, x);
-            stmt.setInt(4, z);
-            return stmt.executeUpdate() > 0;
-        } catch (SQLException e) {
-            plugin.getLogger().warning("Failed to add structure: " + e.getMessage());
-            return false;
+            )) {
+                stmt.setString(1, world);
+                stmt.setString(2, structureType);
+                stmt.setInt(3, x);
+                stmt.setInt(4, z);
+                return stmt.executeUpdate() > 0;
+            } catch (SQLException e) {
+                plugin.getLogger().warning("Failed to add structure: " + e.getMessage());
+                return false;
+            }
         }
     }
     
     /**
      * Batch add multiple structures for better performance.
      * Uses a transaction for atomicity and speed.
+     * Thread-safe with synchronized block.
      * @return Number of structures actually inserted (ignores duplicates)
      */
     public int addStructuresBatch(String world, List<Object[]> structures) {
         if (structures == null || structures.isEmpty()) return 0;
         
-        int inserted = 0;
-        try {
-            connection.setAutoCommit(false);
-            PreparedStatement stmt = connection.prepareStatement(
-                "INSERT OR IGNORE INTO structures (world, structure_type, x, z) VALUES (?, ?, ?, ?)"
-            );
-            
-            for (Object[] s : structures) {
-                stmt.setString(1, world);
-                stmt.setString(2, (String) s[0]); // structureType
-                stmt.setInt(3, (Integer) s[1]);   // x
-                stmt.setInt(4, (Integer) s[2]);   // z
-                stmt.addBatch();
-            }
-            
-            int[] results = stmt.executeBatch();
-            for (int r : results) {
-                if (r > 0) inserted++;
-            }
-            
-            connection.commit();
-            connection.setAutoCommit(true);
-            
-        } catch (SQLException e) {
-            plugin.getLogger().warning("Failed batch insert: " + e.getMessage());
+        synchronized (dbLock) {
+            int inserted = 0;
             try {
-                connection.rollback();
-                connection.setAutoCommit(true);
-            } catch (SQLException e2) {
-                // Ignore rollback errors
+                boolean wasAutoCommit = connection.getAutoCommit();
+                if (wasAutoCommit) {
+                    connection.setAutoCommit(false);
+                }
+                
+                try (PreparedStatement stmt = connection.prepareStatement(
+                    "INSERT OR IGNORE INTO structures (world, structure_type, x, z) VALUES (?, ?, ?, ?)"
+                )) {
+                    for (Object[] s : structures) {
+                        stmt.setString(1, world);
+                        stmt.setString(2, (String) s[0]); // structureType
+                        stmt.setInt(3, (Integer) s[1]);   // x
+                        stmt.setInt(4, (Integer) s[2]);   // z
+                        stmt.addBatch();
+                    }
+                    
+                    int[] results = stmt.executeBatch();
+                    for (int r : results) {
+                        if (r > 0) inserted++;
+                    }
+                    
+                    connection.commit();
+                } finally {
+                    if (wasAutoCommit) {
+                        connection.setAutoCommit(true);
+                    }
+                }
+                
+            } catch (SQLException e) {
+                plugin.getLogger().warning("Failed batch insert: " + e.getMessage());
+                try {
+                    if (!connection.getAutoCommit()) {
+                        connection.rollback();
+                        connection.setAutoCommit(true);
+                    }
+                } catch (SQLException e2) {
+                    // Ignore rollback errors
+                }
             }
+            return inserted;
         }
-        return inserted;
     }
     
     // ==================== SCANNED CHUNKS TRACKING ====================
     
     /**
      * Check if a chunk has already been scanned.
+     * Thread-safe.
      */
     public boolean isChunkScanned(String world, int chunkX, int chunkZ) {
-        try {
-            PreparedStatement stmt = connection.prepareStatement(
+        synchronized (dbLock) {
+            try (PreparedStatement stmt = connection.prepareStatement(
                 "SELECT 1 FROM scanned_chunks WHERE world = ? AND chunk_x = ? AND chunk_z = ?"
-            );
-            stmt.setString(1, world);
-            stmt.setInt(2, chunkX);
-            stmt.setInt(3, chunkZ);
-            ResultSet rs = stmt.executeQuery();
-            return rs.next();
-        } catch (SQLException e) {
-            return false;
+            )) {
+                stmt.setString(1, world);
+                stmt.setInt(2, chunkX);
+                stmt.setInt(3, chunkZ);
+                try (ResultSet rs = stmt.executeQuery()) {
+                    return rs.next();
+                }
+            } catch (SQLException e) {
+                return false;
+            }
         }
     }
     
     /**
      * Get all scanned chunks for a world as a Set for fast lookup.
      * Returns packed long values (chunkX | (chunkZ << 32))
+     * Thread-safe.
      */
     public Set<Long> getScannedChunks(String world) {
         Set<Long> scanned = new HashSet<>();
-        try {
-            PreparedStatement stmt = connection.prepareStatement(
+        synchronized (dbLock) {
+            try (PreparedStatement stmt = connection.prepareStatement(
                 "SELECT chunk_x, chunk_z FROM scanned_chunks WHERE world = ?"
-            );
-            stmt.setString(1, world);
-            ResultSet rs = stmt.executeQuery();
-            while (rs.next()) {
-                int x = rs.getInt("chunk_x");
-                int z = rs.getInt("chunk_z");
-                // Pack into long for fast HashSet lookup
-                long packed = ((long) x & 0xFFFFFFFFL) | (((long) z) << 32);
-                scanned.add(packed);
+            )) {
+                stmt.setString(1, world);
+                try (ResultSet rs = stmt.executeQuery()) {
+                    while (rs.next()) {
+                        int x = rs.getInt("chunk_x");
+                        int z = rs.getInt("chunk_z");
+                        // Pack into long for fast HashSet lookup
+                        long packed = ((long) x & 0xFFFFFFFFL) | (((long) z) << 32);
+                        scanned.add(packed);
+                    }
+                }
+            } catch (SQLException e) {
+                plugin.getLogger().warning("Failed to get scanned chunks: " + e.getMessage());
             }
-        } catch (SQLException e) {
-            plugin.getLogger().warning("Failed to get scanned chunks: " + e.getMessage());
         }
         return scanned;
     }
     
     /**
      * Mark chunks as scanned in batch (for performance).
+     * Thread-safe with synchronized block.
      */
     public void markChunksScanned(String world, List<int[]> chunks) {
         if (chunks == null || chunks.isEmpty()) return;
         
-        try {
-            connection.setAutoCommit(false);
-            PreparedStatement stmt = connection.prepareStatement(
-                "INSERT OR IGNORE INTO scanned_chunks (world, chunk_x, chunk_z) VALUES (?, ?, ?)"
-            );
-            
-            for (int[] chunk : chunks) {
-                stmt.setString(1, world);
-                stmt.setInt(2, chunk[0]);
-                stmt.setInt(3, chunk[1]);
-                stmt.addBatch();
-            }
-            
-            stmt.executeBatch();
-            connection.commit();
-            connection.setAutoCommit(true);
-            
-        } catch (SQLException e) {
-            plugin.getLogger().warning("Failed to mark chunks scanned: " + e.getMessage());
+        synchronized (dbLock) {
             try {
-                connection.rollback();
-                connection.setAutoCommit(true);
-            } catch (SQLException e2) {
-                // Ignore
+                // Check current auto-commit state
+                boolean wasAutoCommit = connection.getAutoCommit();
+                
+                if (wasAutoCommit) {
+                    connection.setAutoCommit(false);
+                }
+                
+                try (PreparedStatement stmt = connection.prepareStatement(
+                    "INSERT OR IGNORE INTO scanned_chunks (world, chunk_x, chunk_z) VALUES (?, ?, ?)"
+                )) {
+                    for (int[] chunk : chunks) {
+                        stmt.setString(1, world);
+                        stmt.setInt(2, chunk[0]);
+                        stmt.setInt(3, chunk[1]);
+                        stmt.addBatch();
+                    }
+                    
+                    stmt.executeBatch();
+                    connection.commit();
+                } finally {
+                    // Restore auto-commit state
+                    if (wasAutoCommit) {
+                        connection.setAutoCommit(true);
+                    }
+                }
+                
+            } catch (SQLException e) {
+                plugin.getConfigManager().debug("Failed to mark chunks scanned: " + e.getMessage());
+                try {
+                    if (!connection.getAutoCommit()) {
+                        connection.rollback();
+                        connection.setAutoCommit(true);
+                    }
+                } catch (SQLException e2) {
+                    // Ignore rollback errors
+                }
             }
         }
     }

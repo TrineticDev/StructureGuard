@@ -1172,6 +1172,56 @@ public class StructureFinder {
     }
     
     /**
+     * Dump all Map-returning methods on chunks for diagnosis.
+     * Helps identify correct method when obfuscated names don't match.
+     */
+    public List<String> dumpChunkMethods(World world) {
+        List<String> output = new ArrayList<>();
+        
+        try {
+            if (!reflectionCacheInitialized) {
+                initReflectionCache(world);
+            }
+            
+            if (getChunkMethod == null || cachedServerLevel == null) {
+                output.add("§cCannot get chunk - not initialized");
+                return output;
+            }
+            
+            // Get a chunk that likely has structures (spawn area)
+            Object chunk = getChunkMethod.invoke(cachedServerLevel, 0, 0);
+            if (chunk == null) {
+                output.add("§cChunk is null");
+                return output;
+            }
+            
+            output.add("§6Chunk class: §f" + chunk.getClass().getName());
+            output.add("§6Map-returning methods:");
+            
+            for (Method m : chunk.getClass().getMethods()) {
+                if (m.getParameterCount() == 0 && Map.class.isAssignableFrom(m.getReturnType())) {
+                    try {
+                        Object result = m.invoke(chunk);
+                        int size = (result != null) ? ((Map<?,?>)result).size() : -1;
+                        String generic = m.getGenericReturnType().getTypeName();
+                        
+                        // Highlight methods that might be structure-related
+                        String color = generic.contains("Structure") || generic.contains("class_3449") ? "§a" : "§7";
+                        output.add(color + "  " + m.getName() + "() §8-> " + generic + " §7[size=" + size + "]");
+                    } catch (Exception e) {
+                        output.add("§c  " + m.getName() + "() -> error: " + e.getMessage());
+                    }
+                }
+            }
+            
+        } catch (Exception e) {
+            output.add("§cError: " + e.getMessage());
+        }
+        
+        return output;
+    }
+    
+    /**
      * Probe a specific chunk for structures with verbose output.
      * Used for debugging structure detection issues.
      */

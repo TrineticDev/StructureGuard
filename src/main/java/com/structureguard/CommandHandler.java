@@ -93,6 +93,8 @@ public class CommandHandler implements CommandExecutor, TabCompleter {
                 return cmdDebug(sender, args);
             case "probe":
                 return cmdProbe(sender, args);
+            case "methods":
+                return cmdMethods(sender, args);
                 
             default:
                 sender.sendMessage("§cUnknown command. Use /sg for help.");
@@ -1259,6 +1261,32 @@ public class CommandHandler implements CommandExecutor, TabCompleter {
         } else {
             sender.sendMessage("§7Database: no structures within 128 blocks");
         }
+        
+        return true;
+    }
+    
+    /**
+     * Dump all Map-returning methods on chunks - diagnostic command.
+     */
+    private boolean cmdMethods(CommandSender sender, String[] args) {
+        if (!sender.hasPermission("structureguard.admin")) {
+            sender.sendMessage("§cNo permission.");
+            return true;
+        }
+        
+        if (!(sender instanceof Player)) {
+            sender.sendMessage("§cPlayers only.");
+            return true;
+        }
+        
+        Player player = (Player) sender;
+        
+        List<String> output = plugin.getStructureFinder().dumpChunkMethods(player.getWorld());
+        for (String line : output) {
+            sender.sendMessage(line);
+        }
+        
+        sender.sendMessage("§7Methods with §agreen§7 text likely contain structure data.");
         
         return true;
     }

@@ -8,9 +8,8 @@ import org.bukkit.event.Listener;
 import org.bukkit.event.world.ChunkLoadEvent;
 
 import java.util.*;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -27,18 +26,32 @@ public class ChunkLoadListener implements Listener {
     // Track processed chunks to avoid duplicate processing on reload
     private final Set<Long> processedChunks = Collections.synchronizedSet(new HashSet<>());
     
-    // Fixed thread pool for chunk processing - never skips, never explodes
-    // 10 threads handles mass logins without overwhelming the server
-    private final ExecutorService chunkProcessor = Executors.newFixedThreadPool(10, r -> {
-        Thread t = new Thread(r, "StructureGuard-ChunkProcessor");
-        t.setDaemon(true);
-        return t;
-    });
+    // Rate limiting: max concurrent async tasks to prevent thread explosion
+    private static final int MAX_CONCURRENT_TASKS = 10;
+    private final AtomicInteger activeTaskCount = new AtomicInteger(0);
+    
+    // Queue for chunks waiting to be processed (when at max concurrent)
+    private final ConcurrentLinkedQueue<ChunkTask> pendingChunks = new ConcurrentLinkedQueue<>();
     
     // Statistics
     private final AtomicLong processedChunkCount = new AtomicLong(0);
     private final AtomicLong protectedStructureCount = new AtomicLong(0);
-    private final AtomicLong queuedChunkCount = new AtomicLong(0);
+    
+    // Simple holder for chunk task data
+    private static class ChunkTask {
+        final World world;
+        final int chunkX, chunkZ;
+        final String worldName;
+        final long chunkKey;
+        
+        ChunkTask(World world, int chunkX, int chunkZ, String worldName, long chunkKey) {
+            this.world = world;
+            this.chunkX = chunkX;
+            this.chunkZ = chunkZ;
+            this.worldName = worldName;
+            this.chunkKey = chunkKey;
+        }
+    }
     
     public ChunkLoadListener(StructureGuardPlugin plugin) {
         this.plugin = plugin;
@@ -76,27 +89,56 @@ public class ChunkLoadListener implements Listener {
             return;
         }
         
-        // Queue for async processing - fixed thread pool handles rate limiting
-        // Unbounded queue = never skip chunks, 10 threads = never explode
         final int chunkX = chunk.getX();
         final int chunkZ = chunk.getZ();
         final String worldName = world.getName();
         
-        queuedChunkCount.incrementAndGet();
+        ChunkTask task = new ChunkTask(world, chunkX, chunkZ, worldName, chunkKey);
         
-        chunkProcessor.submit(() -> {
+        // Rate limiting: if under limit, process immediately; otherwise queue
+        if (activeTaskCount.get() < MAX_CONCURRENT_TASKS) {
+            startAsyncTask(task);
+        } else {
+            // Queue for later - will be picked up when a task completes
+            pendingChunks.offer(task);
+        }
+    }
+    
+    /**
+     * Start an async task using Bukkit's scheduler (maintains proper context for NMS).
+     */
+    private void startAsyncTask(ChunkTask task) {
+        activeTaskCount.incrementAndGet();
+        
+        plugin.getServer().getScheduler().runTaskAsynchronously(plugin, () -> {
             try {
-                processChunkStructures(world, chunkX, chunkZ);
-                processedChunks.add(chunkKey);
+                processChunkStructures(task.world, task.chunkX, task.chunkZ);
+                processedChunks.add(task.chunkKey);
                 processedChunkCount.incrementAndGet();
                 
                 // Mark as scanned in database for persistence across restarts
-                plugin.getDatabase().markChunksScanned(worldName, 
-                    java.util.Collections.singletonList(new int[]{chunkX, chunkZ}));
+                plugin.getDatabase().markChunksScanned(task.worldName, 
+                    java.util.Collections.singletonList(new int[]{task.chunkX, task.chunkZ}));
             } catch (Exception e) {
-                plugin.getConfigManager().debug("Error processing chunk " + chunkX + "," + chunkZ + ": " + e.getMessage());
+                plugin.getConfigManager().debug("Error processing chunk " + task.chunkX + "," + task.chunkZ + ": " + e.getMessage());
+            } finally {
+                activeTaskCount.decrementAndGet();
+                // Process next queued chunk if any
+                processNextQueued();
             }
         });
+    }
+    
+    /**
+     * Process the next queued chunk if there's capacity.
+     */
+    private void processNextQueued() {
+        if (activeTaskCount.get() < MAX_CONCURRENT_TASKS) {
+            ChunkTask next = pendingChunks.poll();
+            if (next != null) {
+                startAsyncTask(next);
+            }
+        }
     }
     
     /**
@@ -212,17 +254,17 @@ public class ChunkLoadListener implements Listener {
     }
     
     /**
-     * Get the number of chunks queued this session.
-     */
-    public long getQueuedChunkCount() {
-        return queuedChunkCount.get();
-    }
-    
-    /**
      * Get pending queue size (chunks waiting to be processed).
      */
     public long getPendingCount() {
-        return queuedChunkCount.get() - processedChunkCount.get();
+        return pendingChunks.size();
+    }
+    
+    /**
+     * Get current active task count.
+     */
+    public int getActiveTaskCount() {
+        return activeTaskCount.get();
     }
     
     /**
@@ -249,13 +291,5 @@ public class ChunkLoadListener implements Listener {
     public void resetStats() {
         processedChunkCount.set(0);
         protectedStructureCount.set(0);
-        queuedChunkCount.set(0);
-    }
-    
-    /**
-     * Shutdown the chunk processor (called on plugin disable).
-     */
-    public void shutdown() {
-        chunkProcessor.shutdown();
     }
 }

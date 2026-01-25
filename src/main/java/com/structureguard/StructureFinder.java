@@ -293,41 +293,52 @@ public class StructureFinder {
                     if (testChunk != null) {
                         plugin.getConfigManager().debug("Got test chunk: " + testChunk.getClass().getName());
                         
-                        // Find getAllStarts or getStructureStarts
+                        // Find getAllStarts or getStructureStarts - be very specific about method names
+                        // Fabric 1.21.1 intermediary: method_12016 = getAllStarts()
+                        // Mojang mappings: getAllStarts()
                         chunkGetStructureStartsMethod = findMethodByNames(testChunk.getClass(),
-                            "getAllStarts", "getStructureStarts", "method_12016", "getAllReferences", 
-                            "h", "g", "f", "e", "d", "c", "b", "a");  // Try obfuscated names
+                            "getAllStarts", "getStructureStarts", "method_12016");
                         
+                        // If not found by exact name, search more carefully
                         if (chunkGetStructureStartsMethod == null) {
-                            // Search for any 0-param method returning a Map
+                            plugin.getConfigManager().debug("Searching for structure method by return type...");
+                            // Look for methods whose return type's generic signature contains "Structure"
                             for (Method m : testChunk.getClass().getMethods()) {
-                                if (m.getParameterCount() == 0 && 
-                                    Map.class.isAssignableFrom(m.getReturnType())) {
-                                    chunkGetStructureStartsMethod = m;
-                                    plugin.getConfigManager().debug("Found potential structure method: " + 
-                                        m.getName() + " -> " + m.getReturnType().getSimpleName());
-                                    break;
-                                }
-                            }
-                        }
-                        
-                        // If still not found, list all methods to diagnose
-                        if (chunkGetStructureStartsMethod == null) {
-                            plugin.getConfigManager().debug("Could not find structure starts method on Chunk. Available 0-param methods:");
-                            for (Method m : testChunk.getClass().getMethods()) {
-                                if (m.getParameterCount() == 0 && !m.getReturnType().equals(void.class)) {
-                                    String retName = m.getReturnType().getSimpleName();
-                                    if (retName.contains("Map") || retName.contains("Structure") || 
-                                        retName.contains("Start") || m.getName().length() <= 2) {
-                                        plugin.getConfigManager().debug("  " + m.getName() + "() -> " + retName);
+                                if (m.getParameterCount() == 0 && Map.class.isAssignableFrom(m.getReturnType())) {
+                                    // Check the generic type signature
+                                    String genericSig = m.getGenericReturnType().getTypeName();
+                                    String methodName = m.getName();
+                                    plugin.getConfigManager().debug("  Checking: " + methodName + "() -> " + genericSig);
+                                    
+                                    // Must contain "Structure" in the generic signature to be the right method
+                                    if (genericSig.contains("Structure") || genericSig.contains("class_3449") ||
+                                        methodName.toLowerCase().contains("struct") ||
+                                        methodName.toLowerCase().contains("start")) {
+                                        chunkGetStructureStartsMethod = m;
+                                        plugin.getConfigManager().debug("  Selected this method!");
+                                        break;
                                     }
                                 }
                             }
                         }
                         
+                        // Still not found? List ALL Map-returning methods for diagnosis
+                        if (chunkGetStructureStartsMethod == null) {
+                            plugin.getConfigManager().debug("Could not find structure starts method on Chunk.");
+                            plugin.getConfigManager().debug("Available 0-param Map-returning methods:");
+                            for (Method m : testChunk.getClass().getMethods()) {
+                                if (m.getParameterCount() == 0 && Map.class.isAssignableFrom(m.getReturnType())) {
+                                    plugin.getConfigManager().debug("  " + m.getName() + "() -> " + 
+                                        m.getGenericReturnType().getTypeName());
+                                }
+                            }
+                        }
+                        
                         if (chunkGetStructureStartsMethod != null) {
-                            plugin.getConfigManager().debug("Found Chunk structure method: " + 
-                                chunkGetStructureStartsMethod.getName());
+                            // ALWAYS log this at startup - critical for debugging
+                            plugin.getLogger().info("[StructureFinder] Using chunk method: " + 
+                                chunkGetStructureStartsMethod.getName() + "() -> " + 
+                                chunkGetStructureStartsMethod.getGenericReturnType().getTypeName());
                             
                             // Test it
                             Object structureStarts = chunkGetStructureStartsMethod.invoke(testChunk);
@@ -352,6 +363,11 @@ public class StructureFinder {
                                             "getBoundingBox", "method_14969", "f", "g", "h");
                                         plugin.getConfigManager().debug("Found StructureStart methods");
                                     }
+                                } else {
+                                    // Empty map at spawn - log the map's key/value types for diagnosis
+                                    plugin.getConfigManager().debug("Test chunk at 0,0 has empty structure map");
+                                    plugin.getConfigManager().debug("Map generic type: " + 
+                                        chunkGetStructureStartsMethod.getGenericReturnType().getTypeName());
                                 }
                                 
                                 plugin.getConfigManager().debug("Chunk-based path available: Chunk." + 
@@ -1161,7 +1177,8 @@ public class StructureFinder {
             sb.append(" | getAllStructuresAt: ").append(getAllStructuresAtMethod.getName());
         }
         if (chunkGetStructureStartsMethod != null) {
-            sb.append(" | chunkStructureStarts: ").append(chunkGetStructureStartsMethod.getName());
+            sb.append(" | chunkStarts: ").append(chunkGetStructureStartsMethod.getName())
+              .append(" -> ").append(chunkGetStructureStartsMethod.getGenericReturnType().getTypeName());
         }
         if (cachedStructureRegistry != null) {
             sb.append(" | Registry: OK");
@@ -1225,11 +1242,15 @@ public class StructureFinder {
             // Try Chunk path
             if (getChunkMethod != null && chunkGetStructureStartsMethod != null) {
                 output.add("§7Trying Chunk path...");
+                output.add("§7  Using method: " + chunkGetStructureStartsMethod.getName() + 
+                    "() -> " + chunkGetStructureStartsMethod.getGenericReturnType().getTypeName());
                 try {
                     Object chunk = getChunkMethod.invoke(cachedServerLevel, chunkX, chunkZ);
                     if (chunk == null) {
                         output.add("§c  getChunk returned null");
                     } else {
+                        output.add("§7  Chunk class: " + chunk.getClass().getName());
+                        
                         Object structureStarts = chunkGetStructureStartsMethod.invoke(chunk);
                         if (structureStarts == null) {
                             output.add("§c  getStructureStarts returned null");
@@ -1243,6 +1264,23 @@ public class StructureFinder {
                                 String name = getStructureNameCached(structure);
                                 String startInfo = start != null ? start.getClass().getSimpleName() : "null";
                                 output.add("§7    " + name + " §8(" + startInfo + ")");
+                            }
+                            
+                            // If empty, show all Map methods available for diagnosis
+                            if (startsMap.isEmpty()) {
+                                output.add("§e  (Empty map - listing all Map-returning methods on Chunk)");
+                                for (java.lang.reflect.Method m : chunk.getClass().getMethods()) {
+                                    if (m.getParameterCount() == 0 && Map.class.isAssignableFrom(m.getReturnType())) {
+                                        try {
+                                            Object result = m.invoke(chunk);
+                                            int size = result != null ? ((Map<?,?>)result).size() : -1;
+                                            String sig = m.getGenericReturnType().getTypeName();
+                                            output.add("§7    " + m.getName() + "() -> " + sig + " [size=" + size + "]");
+                                        } catch (Exception ex) {
+                                            output.add("§7    " + m.getName() + "() -> error: " + ex.getMessage());
+                                        }
+                                    }
+                                }
                             }
                         } else {
                             output.add("§c  Unexpected type: " + structureStarts.getClass().getName());

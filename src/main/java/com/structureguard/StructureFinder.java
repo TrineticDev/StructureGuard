@@ -242,126 +242,131 @@ public class StructureFinder {
                 }
             }
             
-            // If Mojang path didn't work, try Chunk-based path (Fabric fallback)
+            // Try Chunk-based path as well (for fallback when Mojang returns nothing)
+            // This is critical because some mods store structures only via StructureStart in chunks
             boolean chunkPathWorks = false;
-            if (!mojangPathWorks) {
-                plugin.getConfigManager().debug("Mojang path not available, trying Chunk-based path (Fabric)...");
-                
-                // Get method to retrieve chunks - try multiple variants
-                getChunkMethod = null;
-                String[] chunkMethodNames = {"getChunk", "getChunkAt", "method_8497", "a"};
-                for (String methodName : chunkMethodNames) {
-                    try {
-                        // Try getChunk(int, int) first
-                        Method m = cachedServerLevel.getClass().getMethod(methodName, int.class, int.class);
-                        // Verify it returns a Chunk-like object
-                        String retName = m.getReturnType().getName();
-                        if (retName.contains("Chunk") || retName.contains("class_2791") || 
-                            retName.contains("LevelChunk") || retName.contains("IChunkAccess")) {
-                            getChunkMethod = m;
-                            plugin.getConfigManager().debug("Found getChunk via exact match: " + methodName);
-                            break;
+            plugin.getConfigManager().debug("Trying Chunk-based path (for fallback)...");
+            
+            // Get method to retrieve chunks - try multiple variants
+            getChunkMethod = null;
+            String[] chunkMethodNames = {"getChunk", "getChunkAt", "method_8497", "a"};
+            for (String methodName : chunkMethodNames) {
+                try {
+                    // Try getChunk(int, int) first
+                    Method m = cachedServerLevel.getClass().getMethod(methodName, int.class, int.class);
+                    // Verify it returns a Chunk-like object
+                    String retName = m.getReturnType().getName();
+                    if (retName.contains("Chunk") || retName.contains("class_2791") || 
+                        retName.contains("LevelChunk") || retName.contains("IChunkAccess")) {
+                        getChunkMethod = m;
+                        plugin.getConfigManager().debug("Found getChunk via exact match: " + methodName);
+                        break;
+                    }
+                } catch (NoSuchMethodException e) {
+                    // Try next
+                }
+            }
+            
+            // If still not found, search all methods
+            if (getChunkMethod == null) {
+                for (Method m : cachedServerLevel.getClass().getMethods()) {
+                    if (m.getParameterCount() == 2) {
+                        Class<?>[] params = m.getParameterTypes();
+                        if (params[0] == int.class && params[1] == int.class) {
+                            String retName = m.getReturnType().getName();
+                            if (retName.contains("Chunk") || retName.contains("class_2791") ||
+                                retName.contains("LevelChunk")) {
+                                getChunkMethod = m;
+                                plugin.getConfigManager().debug("Found getChunk via search: " + m.getName() + 
+                                    " -> " + retName);
+                                break;
+                            }
                         }
-                    } catch (NoSuchMethodException e) {
-                        // Try next
                     }
                 }
-                
-                // If still not found, search all methods
-                if (getChunkMethod == null) {
-                    for (Method m : cachedServerLevel.getClass().getMethods()) {
-                        if (m.getParameterCount() == 2) {
-                            Class<?>[] params = m.getParameterTypes();
-                            if (params[0] == int.class && params[1] == int.class) {
-                                String retName = m.getReturnType().getName();
-                                if (retName.contains("Chunk") || retName.contains("class_2791") ||
-                                    retName.contains("LevelChunk")) {
-                                    getChunkMethod = m;
-                                    plugin.getConfigManager().debug("Found getChunk via search: " + m.getName() + 
-                                        " -> " + retName);
+            }
+            
+            if (getChunkMethod != null) {
+                // Get a test chunk to find structure methods
+                try {
+                    Object testChunk = getChunkMethod.invoke(cachedServerLevel, 0, 0);
+                    if (testChunk != null) {
+                        plugin.getConfigManager().debug("Got test chunk: " + testChunk.getClass().getName());
+                        
+                        // Find getAllStarts or getStructureStarts
+                        chunkGetStructureStartsMethod = findMethodByNames(testChunk.getClass(),
+                            "getAllStarts", "getStructureStarts", "method_12016", "getAllReferences", 
+                            "h", "g", "f", "e", "d", "c", "b", "a");  // Try obfuscated names
+                        
+                        if (chunkGetStructureStartsMethod == null) {
+                            // Search for any 0-param method returning a Map
+                            for (Method m : testChunk.getClass().getMethods()) {
+                                if (m.getParameterCount() == 0 && 
+                                    Map.class.isAssignableFrom(m.getReturnType())) {
+                                    chunkGetStructureStartsMethod = m;
+                                    plugin.getConfigManager().debug("Found potential structure method: " + 
+                                        m.getName() + " -> " + m.getReturnType().getSimpleName());
                                     break;
                                 }
                             }
                         }
-                    }
-                }
-                
-                if (getChunkMethod != null) {
-                    // Get a test chunk to find structure methods
-                    try {
-                        Object testChunk = getChunkMethod.invoke(cachedServerLevel, 0, 0);
-                        if (testChunk != null) {
-                            plugin.getConfigManager().debug("Got test chunk: " + testChunk.getClass().getName());
-                            
-                            // Find getAllStarts or getStructureStarts
-                            chunkGetStructureStartsMethod = findMethodByNames(testChunk.getClass(),
-                                "getAllStarts", "getStructureStarts", "method_12016", "getAllReferences", 
-                                "h", "g", "f", "e", "d", "c", "b", "a");  // Try obfuscated names
-                            
-                            if (chunkGetStructureStartsMethod == null) {
-                                // Search for any 0-param method returning a Map
-                                for (Method m : testChunk.getClass().getMethods()) {
-                                    if (m.getParameterCount() == 0 && 
-                                        Map.class.isAssignableFrom(m.getReturnType())) {
-                                        chunkGetStructureStartsMethod = m;
-                                        plugin.getConfigManager().debug("Found potential structure method: " + 
-                                            m.getName() + " -> " + m.getReturnType().getSimpleName());
-                                        break;
+                        
+                        // If still not found, list all methods to diagnose
+                        if (chunkGetStructureStartsMethod == null) {
+                            plugin.getConfigManager().debug("Could not find structure starts method on Chunk. Available 0-param methods:");
+                            for (Method m : testChunk.getClass().getMethods()) {
+                                if (m.getParameterCount() == 0 && !m.getReturnType().equals(void.class)) {
+                                    String retName = m.getReturnType().getSimpleName();
+                                    if (retName.contains("Map") || retName.contains("Structure") || 
+                                        retName.contains("Start") || m.getName().length() <= 2) {
+                                        plugin.getConfigManager().debug("  " + m.getName() + "() -> " + retName);
                                     }
-                                }
-                            }
-                            
-                            // If still not found, list all methods to diagnose
-                            if (chunkGetStructureStartsMethod == null) {
-                                plugin.getConfigManager().debug("Could not find structure starts method on Chunk. Available 0-param methods:");
-                                for (Method m : testChunk.getClass().getMethods()) {
-                                    if (m.getParameterCount() == 0 && !m.getReturnType().equals(void.class)) {
-                                        String retName = m.getReturnType().getSimpleName();
-                                        if (retName.contains("Map") || retName.contains("Structure") || 
-                                            retName.contains("Start") || m.getName().length() <= 2) {
-                                            plugin.getConfigManager().debug("  " + m.getName() + "() -> " + retName);
-                                        }
-                                    }
-                                }
-                            }
-                            
-                            if (chunkGetStructureStartsMethod != null) {
-                                plugin.getConfigManager().debug("Found Chunk structure method: " + 
-                                    chunkGetStructureStartsMethod.getName());
-                                
-                                // Test it
-                                Object structureStarts = chunkGetStructureStartsMethod.invoke(testChunk);
-                                if (structureStarts instanceof Map) {
-                                    Map<?, ?> startsMap = (Map<?, ?>) structureStarts;
-                                    plugin.getConfigManager().debug("Structure starts map has " + startsMap.size() + " entries");
-                                    
-                                    // Even if empty, the path works - we just can't cache StructureStart methods yet
-                                    chunkPathWorks = true;
-                                    useFabricPath = true;
-                                    
-                                    if (!startsMap.isEmpty()) {
-                                        Object sampleStart = startsMap.values().iterator().next();
-                                        if (sampleStart != null) {
-                                            structureStartGetStructureMethod = findMethodByNames(sampleStart.getClass(),
-                                                "getStructure", "method_16656", "getFeature", "e", "f", "g");
-                                            structureStartGetBoundingBoxMethod = findMethodByNames(sampleStart.getClass(),
-                                                "getBoundingBox", "method_14969", "f", "g", "h");
-                                            plugin.getConfigManager().debug("Found StructureStart methods");
-                                        }
-                                    }
-                                    
-                                    plugin.getConfigManager().debug("Using Chunk-based path: Chunk." + 
-                                        chunkGetStructureStartsMethod.getName() + "()");
-                                } else {
-                                    plugin.getConfigManager().debug("Chunk structure method returned: " + 
-                                        (structureStarts == null ? "null" : structureStarts.getClass().getName()));
                                 }
                             }
                         }
-                    } catch (Exception e) {
-                        plugin.getConfigManager().debug("Chunk-based path test failed: " + e.getMessage());
+                        
+                        if (chunkGetStructureStartsMethod != null) {
+                            plugin.getConfigManager().debug("Found Chunk structure method: " + 
+                                chunkGetStructureStartsMethod.getName());
+                            
+                            // Test it
+                            Object structureStarts = chunkGetStructureStartsMethod.invoke(testChunk);
+                            if (structureStarts instanceof Map) {
+                                Map<?, ?> startsMap = (Map<?, ?>) structureStarts;
+                                plugin.getConfigManager().debug("Structure starts map has " + startsMap.size() + " entries");
+                                
+                                // Mark chunk path as available for fallback use
+                                chunkPathWorks = true;
+                                
+                                // Only set useFabricPath if Mojang path didn't work
+                                if (!mojangPathWorks) {
+                                    useFabricPath = true;
+                                }
+                                
+                                if (!startsMap.isEmpty()) {
+                                    Object sampleStart = startsMap.values().iterator().next();
+                                    if (sampleStart != null) {
+                                        structureStartGetStructureMethod = findMethodByNames(sampleStart.getClass(),
+                                            "getStructure", "method_16656", "getFeature", "e", "f", "g");
+                                        structureStartGetBoundingBoxMethod = findMethodByNames(sampleStart.getClass(),
+                                            "getBoundingBox", "method_14969", "f", "g", "h");
+                                        plugin.getConfigManager().debug("Found StructureStart methods");
+                                    }
+                                }
+                                
+                                plugin.getConfigManager().debug("Chunk-based path available: Chunk." + 
+                                    chunkGetStructureStartsMethod.getName() + "()");
+                            } else {
+                                plugin.getConfigManager().debug("Chunk structure method returned: " + 
+                                    (structureStarts == null ? "null" : structureStarts.getClass().getName()));
+                            }
+                        }
                     }
+                } catch (Exception e) {
+                    plugin.getConfigManager().debug("Chunk-based path test failed: " + e.getMessage());
                 }
+            } else {
+                plugin.getConfigManager().debug("Could not find getChunk method - chunk fallback not available");
             }
             
             // Make sure at least one path works

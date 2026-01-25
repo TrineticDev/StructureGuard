@@ -1245,6 +1245,18 @@ public class CommandHandler implements CommandExecutor, TabCompleter {
             sender.sendMessage(line);
         }
         
+        // Also check database for structures near this chunk
+        int blockX = chunkX * 16 + 8;
+        int blockZ = chunkZ * 16 + 8;
+        StructureDatabase.StructureInfo nearestDb = plugin.getDatabase().getNearestStructure(
+            player.getWorld().getName(), blockX, blockZ, 128);
+        if (nearestDb != null) {
+            double dist = Math.sqrt(Math.pow(nearestDb.x - blockX, 2) + Math.pow(nearestDb.z - blockZ, 2));
+            sender.sendMessage("§7Database nearest: §e" + nearestDb.type + " §7(" + String.format("%.0f", dist) + " blocks)");
+        } else {
+            sender.sendMessage("§7Database: no structures within 128 blocks");
+        }
+        
         return true;
     }
     

@@ -42,7 +42,7 @@
 | `/sg find <structure>` | Locate nearest structure |
 | `/sg info` | Structure info at your location |
 | `/sg status` | System status |
-| `/sg reload` | Reload config |
+| `/sg reload` | Reload config and sync flags to existing regions |
 
 ## Pattern Examples
 
@@ -63,10 +63,11 @@ default-y-max: 320
 
 # Default flags for new regions
 default-flags:
-  block-break: deny
-  block-place: deny
+  use: allow
+  interact: allow
   creeper-explosion: deny
   tnt: deny
+  deny-message: "&cThis structure is protected!"
 
 # Protection rules (managed via /sg protect)
 protected-structures:
@@ -76,6 +77,10 @@ protected-structures:
     flags:
       block-break: deny
 ```
+
+### Config Sync
+
+Edit flags in `config.yml` then run `/sg reload` to apply changes to all existing regions. No need to recreate regions!
 
 ## Permissions
 

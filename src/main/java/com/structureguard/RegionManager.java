@@ -839,6 +839,58 @@ public class RegionManager {
         
         plugin.getLogger().info("Synced " + updatedCount + " regions from config" + 
             (errorCount > 0 ? " (" + errorCount + " errors)" : ""));
+        
+        // Now check for unprotected structures that should be protected
+        protectUnprotectedStructures();
+    }
+    
+    /**
+     * Create regions for structures in the database that match protection rules but have no region.
+     * Called during reload to retroactively protect discovered structures.
+     */
+    public int protectUnprotectedStructures() {
+        if (!worldGuardAvailable) {
+            return 0;
+        }
+        
+        int createdCount = 0;
+        
+        // Get all unprotected structures from database
+        List<StructureDatabase.StructureInfo> unprotected = plugin.getDatabase().getUnprotectedStructures("");
+        
+        plugin.getConfigManager().debug("Checking " + unprotected.size() + " unprotected structures in database...");
+        
+        for (StructureDatabase.StructureInfo info : unprotected) {
+            // Check if there's now a matching protection rule
+            ConfigManager.ProtectionRule rule = plugin.getConfigManager().getProtectionRule(info.type);
+            
+            if (rule == null || !rule.enabled) {
+                continue; // No matching enabled rule
+            }
+            
+            // Check if world is disabled
+            if (plugin.getConfigManager().isWorldDisabled(info.world)) {
+                continue;
+            }
+            
+            // Create region for this structure
+            try {
+                String regionId = createRegionWithFlags(info, rule.radius, rule.yMin, rule.yMax, rule.flags);
+                
+                if (regionId != null) {
+                    createdCount++;
+                    plugin.getLogger().info("Auto-protected " + info.type + " at " + info.x + "," + info.z + " -> " + regionId);
+                }
+            } catch (Exception e) {
+                plugin.getConfigManager().debug("Failed to protect " + info.type + ": " + e.getMessage());
+            }
+        }
+        
+        if (createdCount > 0) {
+            plugin.getLogger().info("Created " + createdCount + " new regions for previously discovered structures");
+        }
+        
+        return createdCount;
     }
     
     /**

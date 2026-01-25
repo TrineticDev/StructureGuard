@@ -1178,6 +1178,8 @@ public class CommandHandler implements CommandExecutor, TabCompleter {
             return true;
         }
         
+        sender.sendMessage("§7Reloading configuration...");
+        
         plugin.reload();
         
         // Clear chunk listener cache so it reprocesses
@@ -1187,6 +1189,7 @@ public class CommandHandler implements CommandExecutor, TabCompleter {
         }
         
         sender.sendMessage("§a✓ Configuration reloaded.");
+        sender.sendMessage("§7Check console for sync details (regions updated/created).");
         
         return true;
     }

@@ -8,7 +8,9 @@ import org.bukkit.event.Listener;
 import org.bukkit.event.world.ChunkLoadEvent;
 
 import java.util.*;
-import java.util.concurrent.Semaphore;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -25,14 +27,18 @@ public class ChunkLoadListener implements Listener {
     // Track processed chunks to avoid duplicate processing on reload
     private final Set<Long> processedChunks = Collections.synchronizedSet(new HashSet<>());
     
-    // Limit concurrent async chunk processing to prevent thread explosion on mass login
-    // 10 concurrent = handles 200+ players joining without overwhelming the thread pool
-    private final Semaphore chunkProcessingSemaphore = new Semaphore(10);
+    // Fixed thread pool for chunk processing - never skips, never explodes
+    // 10 threads handles mass logins without overwhelming the server
+    private final ExecutorService chunkProcessor = Executors.newFixedThreadPool(10, r -> {
+        Thread t = new Thread(r, "StructureGuard-ChunkProcessor");
+        t.setDaemon(true);
+        return t;
+    });
     
     // Statistics
     private final AtomicLong processedChunkCount = new AtomicLong(0);
     private final AtomicLong protectedStructureCount = new AtomicLong(0);
-    private final AtomicLong skippedDueToLoadCount = new AtomicLong(0);
+    private final AtomicLong queuedChunkCount = new AtomicLong(0);
     
     public ChunkLoadListener(StructureGuardPlugin plugin) {
         this.plugin = plugin;
@@ -70,20 +76,15 @@ public class ChunkLoadListener implements Listener {
             return;
         }
         
-        // Process asynchronously to avoid blocking chunk load
-        // Use semaphore to limit concurrent processing and prevent thread explosion
+        // Queue for async processing - fixed thread pool handles rate limiting
+        // Unbounded queue = never skip chunks, 10 threads = never explode
         final int chunkX = chunk.getX();
         final int chunkZ = chunk.getZ();
         final String worldName = world.getName();
         
-        // Try to acquire permit - if all 10 slots are busy, skip this chunk for now
-        // It will be processed when the chunk loads again, or on next restart
-        if (!chunkProcessingSemaphore.tryAcquire()) {
-            skippedDueToLoadCount.incrementAndGet();
-            return;
-        }
+        queuedChunkCount.incrementAndGet();
         
-        plugin.getServer().getScheduler().runTaskAsynchronously(plugin, () -> {
+        chunkProcessor.submit(() -> {
             try {
                 processChunkStructures(world, chunkX, chunkZ);
                 processedChunks.add(chunkKey);
@@ -94,8 +95,6 @@ public class ChunkLoadListener implements Listener {
                     java.util.Collections.singletonList(new int[]{chunkX, chunkZ}));
             } catch (Exception e) {
                 plugin.getConfigManager().debug("Error processing chunk " + chunkX + "," + chunkZ + ": " + e.getMessage());
-            } finally {
-                chunkProcessingSemaphore.release();
             }
         });
     }
@@ -213,11 +212,17 @@ public class ChunkLoadListener implements Listener {
     }
     
     /**
-     * Get the number of chunks skipped due to high load.
-     * These chunks will be processed when they load again or on restart.
+     * Get the number of chunks queued this session.
      */
-    public long getSkippedDueToLoadCount() {
-        return skippedDueToLoadCount.get();
+    public long getQueuedChunkCount() {
+        return queuedChunkCount.get();
+    }
+    
+    /**
+     * Get pending queue size (chunks waiting to be processed).
+     */
+    public long getPendingCount() {
+        return queuedChunkCount.get() - processedChunkCount.get();
     }
     
     /**
@@ -244,6 +249,13 @@ public class ChunkLoadListener implements Listener {
     public void resetStats() {
         processedChunkCount.set(0);
         protectedStructureCount.set(0);
-        skippedDueToLoadCount.set(0);
+        queuedChunkCount.set(0);
+    }
+    
+    /**
+     * Shutdown the chunk processor (called on plugin disable).
+     */
+    public void shutdown() {
+        chunkProcessor.shutdown();
     }
 }

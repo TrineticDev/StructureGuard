@@ -59,6 +59,10 @@ public class StructureGuardPlugin extends JavaPlugin {
     
     @Override
     public void onDisable() {
+        // Shutdown chunk processor thread pool
+        if (chunkLoadListener != null) {
+            chunkLoadListener.shutdown();
+        }
         if (database != null) {
             database.close();
         }

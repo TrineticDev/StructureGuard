@@ -475,8 +475,8 @@ public class StructureDatabase {
         List<int[]> results = new ArrayList<>();
         try {
             PreparedStatement stmt;
-            // Support pattern matching with wildcards
-            if (structureType.contains("*")) {
+            // Support pattern matching with wildcards (* or %)
+            if (structureType.contains("*") || structureType.contains("%")) {
                 String sqlPattern = structureType.replace("*", "%");
                 stmt = connection.prepareStatement(
                     "SELECT x, z FROM structures WHERE world = ? AND structure_type LIKE ?"

@@ -1232,9 +1232,9 @@ public class StructureFinder {
         output.add("§7Detection path: " + getDetectionPathInfo());
         
         try {
-            // Initialize if needed
-            if (!reflectionCacheInitialized) {
-                output.add("§eInitializing reflection cache...");
+            // Initialize if needed (or reinitialize for different world)
+            if (!reflectionCacheInitialized || cachedWorld != world) {
+                output.add("§eInitializing reflection cache for " + world.getName() + "...");
                 initReflectionCache(world);
             }
             
@@ -2176,7 +2176,7 @@ public class StructureFinder {
      * @return true if initialization succeeded
      */
     public boolean initForChunkListener(World world) {
-        if (reflectionCacheInitialized) {
+        if (reflectionCacheInitialized && cachedWorld == world) {
             return true;
         }
         
@@ -2222,9 +2222,9 @@ public class StructureFinder {
      * @return List of structures that have their origin in this chunk
      */
     public List<StructureResult> getStructuresInChunk(World world, int chunkX, int chunkZ) {
-        if (!reflectionCacheInitialized) {
-            // Try to initialize
-            if (!initForChunkListener(world)) {
+        if (!reflectionCacheInitialized || cachedWorld != world) {
+            // Try to initialize (or reinitialize for different world)
+            if (!initReflectionCache(world)) {
                 return Collections.emptyList();
             }
         }
@@ -2244,8 +2244,8 @@ public class StructureFinder {
      * @return List of structures present in this chunk (may not be origin)
      */
     public List<StructureResult> getStructuresSpanningChunk(World world, int chunkX, int chunkZ) {
-        if (!reflectionCacheInitialized) {
-            if (!initForChunkListener(world)) {
+        if (!reflectionCacheInitialized || cachedWorld != world) {
+            if (!initReflectionCache(world)) {
                 return Collections.emptyList();
             }
         }
